@@ -1,0 +1,38 @@
+# Render Blueprint for the Enticra School API (apps/api).
+# The web app is on Vercel; vercel.json forwards /api/* to this service, so the
+# browser only ever talks to the Vercel domain.
+#
+# Values marked `sync: false` are entered in the Render dashboard, never here.
+services:
+  - type: web
+    name: enticra-school-api        # gives https://enticra-school-api.onrender.com (vercel.json points here)
+    runtime: node
+    region: singapore               # closest to Tamil Nadu
+    plan: free                      # sleeps after 15 min idle; first request then takes ~1 min
+    branch: main
+    autoDeployTrigger: checksPass   # deploy only after the CI tests on main pass
+    buildCommand: npm ci
+    startCommand: npm start -w @enticra/api
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: TZ
+        value: Asia/Kolkata
+      - key: GRADER_MODEL
+        value: claude-sonnet-5-5
+      # Neon (or other PostgreSQL) connection string; see docs/database.md.
+      # Without it the API uses an embedded database on Render's temporary disk,
+      # which is wiped on every deploy and restart.
+      - key: DATABASE_URL
+        sync: false
+      # Turns on real AI correction. Leave empty to use the keyword grader.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # 1 = sign in with code 123456 and list the sample accounts on the login page.
+      # Needed until OTP codes are delivered by WhatsApp/SMS: in production with this
+      # off, codes are only written to the server log. Never set it with real school data.
+      - key: DEMO_LOGIN
+        sync: false
