@@ -1,0 +1,5 @@
+/* Latin subsets only, so the single-file demo stays small. Tamil text falls back to the system Tamil font. */
+@font-face { font-family: "Sora Variable"; font-style: normal; font-display: swap; font-weight: 100 800; src: url("@fontsource-variable/sora/files/sora-latin-wght-normal.woff2") format("woff2-variations"); }
+@font-face { font-family: "Figtree Variable"; font-style: normal; font-display: swap; font-weight: 300 900; src: url("@fontsource-variable/figtree/files/figtree-latin-wght-normal.woff2") format("woff2-variations"); }
+@font-face { font-family: "Caveat"; font-style: normal; font-display: swap; font-weight: 500; src: url("@fontsource/caveat/files/caveat-latin-500-normal.woff2") format("woff2"); }
+@font-face { font-family: "Caveat"; font-style: normal; font-display: swap; font-weight: 700; src: url("@fontsource/caveat/files/caveat-latin-700-normal.woff2") format("woff2"); }

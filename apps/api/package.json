@@ -1,0 +1,31 @@
+{
+  "name": "@enticra/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "db:reset": "tsx src/db-reset.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
+    "@electric-sql/pglite": "^0.5.16",
+    "@enticra/core": "*",
+    "@napi-rs/canvas": "^1.1.0",
+    "express": "^4.21.2",
+    "heic-convert": "^2.1.0",
+    "pdfjs-dist": "^6.5.438",
+    "pg": "^8.23.1",
+    "sharp": "^0.35.5",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/heic-convert": "^2.1.1",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.23.1",
+    "@types/supertest": "^6.0.2",
+    "supertest": "^7.0.0"
+  }
+}

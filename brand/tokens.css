@@ -1,0 +1,40 @@
+/* Enticra design tokens. Web (v14) + print/deck. Fonts: Sora (display), Figtree (body), self-hosted woff2. */
+
+/* ---------- Web: dark theme ---------- */
+:root{
+  --bg:#041416; --bg-2:#06191C; --sf:#0A2328; --sf-2:#0E2E34; --ink:#0B333B;
+  --line:rgba(220,238,240,.09); --line-2:rgba(220,238,240,.17);
+  --tx:#ECF4F4; --mu:#A3BEC1; --dim:#7A979B; --dim2:#577579;
+  --or:#E26527; --or-hi:#FF7A3D; --or-soft:#FF9A66; --or-deep:#C4521B;
+  --paper:#EEF3F3; --paper-2:#E1EAEA; --card:#F8FBFB; --ink-2:#123F48; --ink-deep:#061E22; --on-ink:#EEF3F3;
+  --display:"Sora",ui-sans-serif,system-ui,sans-serif;
+  --body:"Figtree",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --gut:clamp(16px,4vw,48px); --max:1360px; --r:20px; --r-lg:32px;
+  --ease:cubic-bezier(.16,1,.3,1); --ease-io:cubic-bezier(.65,0,.35,1); --spring:cubic-bezier(.34,1.56,.64,1);
+  --on-or:#041416; --rib:#0E2E34; --rib-tx:#ECF4F4;
+  color-scheme:dark;
+}
+/* ---------- Web: light theme (default since v13) ---------- */
+:root[data-theme="light"]{
+  --bg:#F3F8F8; --bg-2:#EAF2F2; --sf:#FFFFFF; --sf-2:#E5EFEF;
+  --line:rgba(11,51,59,.11); --line-2:rgba(11,51,59,.2);
+  --tx:#072A30; --mu:#45636A; --dim:#53706F; --dim2:#728C90;
+  --or-hi:#F0702F; --or-soft:#B4461A;
+  color-scheme:light;
+}
+body{background:var(--bg);color:var(--tx);font:400 1.0625rem/1.6 var(--body)}
+h1,h2,h3{font-family:var(--display);font-weight:500;letter-spacing:-.045em;line-height:1;text-wrap:balance}
+.btn{display:inline-flex;align-items:center;gap:12px;height:56px;padding:0 28px;border-radius:999px;background:var(--or);color:var(--on-or);font-weight:600}
+
+/* ---------- Print & decks (brochures, proposals, intros) ---------- */
+.print{
+  --bg:#F3FDFF; --paper:#FFFFFF; --fg:#0B333B; --muted:#4A6A70; --line:#D2E6EA;
+  --tint:#E3F4F6; --warm:#FDEEE6; --orange:#E26527; --on-orange:#FFFFFF;
+  --band:#0B333B; --band-fg:#EAF8FA; --band-muted:#9FC3C9; --band-line:#1E4C55; --band-card:#103F48;
+  --ok:#1F8A5B; --ok-bg:#E2F4EA;
+  --chat-bg:#E9F3F1; --bubble-in:#FFFFFF; --bubble-out:#D3EFE7;
+  --shadow:0 1px 2px rgba(11,51,59,.06),0 16px 40px -16px rgba(11,51,59,.22);
+  --display:"Sora","Segoe UI",system-ui,sans-serif;
+  --body:"Figtree","Segoe UI",system-ui,sans-serif;
+}
+/* Page sizes: A4 brochure 794x1123px; 16:9 deck 1280x720px */

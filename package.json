@@ -1,0 +1,25 @@
+{
+  "name": "enticra-school",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Enticra School: AI school management portal (MVP)",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm:dev -w @enticra/api\" \"npm:dev -w @enticra/web\"",
+    "start": "npm run build -w @enticra/web && npm start -w @enticra/api",
+    "build:demo": "npm run build:demo -w @enticra/web",
+    "test": "vitest run",
+    "typecheck": "tsc -p packages/core && tsc -p apps/api && tsc -p apps/web",
+    "e2e": "node qa/e2e.mjs",
+    "db:reset": "npm run db:reset -w @enticra/api --"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
