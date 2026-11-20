@@ -1,0 +1,17 @@
+# Pings the API every 10 minutes so Render's free plan doesn't put it to sleep
+# (it sleeps after 15 idle minutes, and the first visit after that waits up to a minute).
+# GitHub can run scheduled jobs late, so an occasional short wait can still happen.
+# One always-on free service uses about 730 of Render's 750 free hours a month.
+name: Keep API awake
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+permissions: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping /api/health
+        run: curl -fsS --retry 3 --retry-delay 10 --max-time 90 https://enticra-school-api.onrender.com/api/health
