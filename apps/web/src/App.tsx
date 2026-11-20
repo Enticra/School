@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Role, User } from '@enticra/core';
-import { backend, DEMO, store, type Session } from './api';
+import { backend, DEMO, onServerWaking, store, waitForServer, type Session } from './api';
 import { AppCtx, applySchoolTheme, Crest, EnticraLogo, Icon, initials, type Ctx, type Route } from './ui';
 import { Login } from './pages/Login';
 import { Dashboard } from './pages/Dashboard';
@@ -74,10 +74,13 @@ export function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(getTheme);
 
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
+  // Wake the API as soon as the page opens, so it is ready by the time someone has typed their number.
+  useEffect(() => { if (!DEMO) void waitForServer(); }, []);
   useEffect(() => {
     const t = store.get(TOKEN_KEY);
     if (!t) { setBooting(false); return; }
-    backend.restore(t).then((s) => { if (s) setSession(s); else store.del(TOKEN_KEY); setBooting(false); });
+    // If the server can't be reached, keep the saved sign-in so the next visit can still use it.
+    backend.restore(t).then((s) => { if (s) setSession(s); else store.del(TOKEN_KEY); }, () => {}).finally(() => setBooting(false));
   }, []);
   useEffect(() => { applySchoolTheme(session?.school ?? null); }, [session]);
 
@@ -101,7 +104,7 @@ export function App() {
     bump: () => setTick((t) => t + 1),
   }), [session, route, toast, tick]);
 
-  if (booting) return null;
+  if (booting) return <BootScreen />;
   if (!session || !ctx) return (<><Login onSignedIn={signIn} theme={theme} setTheme={setTheme} /><Toasts toasts={toasts} /></>);
 
   const { user, school } = session;
@@ -228,6 +231,21 @@ function renderPage(role: Role, r: Route) {
     case 'compliance': return <Compliance />;
     default: return <Dashboard />;
   }
+}
+
+/** Shown while a saved sign-in is checked. Stays blank unless the server is waking up, which can take a minute. */
+function BootScreen() {
+  const [waking, setWaking] = useState(false);
+  useEffect(() => onServerWaking(setWaking), []);
+  if (!waking) return null;
+  return (
+    <div role="status" style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, textAlign: 'center' }}>
+      <div className="stack" style={{ alignItems: 'center', gap: 12 }}>
+        <EnticraLogo className="logo" />
+        <p className="muted">Starting the server. This can take up to a minute after a quiet spell.</p>
+      </div>
+    </div>
+  );
 }
 
 function Toasts({ toasts }: { toasts: { id: number; text: string; kind: 'ok' | 'err' }[] }) {

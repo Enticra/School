@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { backend, DEMO, type Config, type Session } from '../api';
+import { backend, DEMO, onServerWaking, type Config, type Session } from '../api';
 import { EnticraLogo, Icon, initials } from '../ui';
 
 const ROLE_LABEL: Record<string, string> = { principal: 'Principal', teacher: 'Teacher', parent: 'Parent', student: 'Student', enticra_admin: 'Enticra admin' };
@@ -11,6 +11,9 @@ export function Login({ onSignedIn, theme, setTheme }: { onSignedIn: (s: Session
   const [step, setStep] = useState<'phone' | 'code'>('phone');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [waking, setWaking] = useState(false);
+  useEffect(() => onServerWaking(setWaking), []);
+  const wakingNote = waking && <p className="hint" role="status">Starting the server. This can take up to a minute after a quiet spell, so please wait.</p>;
 
   useEffect(() => { backend.config().then(setConfig).catch(() => setConfig({ devMode: false, grader: 'mock', demoAccounts: [] })); }, []);
 
@@ -27,7 +30,9 @@ export function Login({ onSignedIn, theme, setTheme }: { onSignedIn: (s: Session
   };
   const quick = async (p: string) => {
     setPhone(p);
-    await backend.requestCode(p);
+    setError('');
+    setBusy(true);
+    try { await backend.requestCode(p); } catch (e) { setError((e as Error).message); setBusy(false); return; }
     await verify(p, '123456');
   };
 
@@ -68,6 +73,7 @@ export function Login({ onSignedIn, theme, setTheme }: { onSignedIn: (s: Session
                   <input id="phone" className="input" inputMode="numeric" autoComplete="tel-national" placeholder="98400 11111" value={phone} onChange={(e) => setPhone(e.target.value)} />
                 </div>
               </div>
+              {wakingNote}
               {error && <p className="error-text" role="alert">{error}</p>}
               <button className="btn lg" disabled={busy}>Send code<span className="chip"><Icon name="arrow" size={16} /></span></button>
             </form>
@@ -78,6 +84,7 @@ export function Login({ onSignedIn, theme, setTheme }: { onSignedIn: (s: Session
                 <input id="code" className="input num" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} style={{ letterSpacing: '.4em', fontSize: '1.2rem', height: 52 }} autoFocus />
                 {config?.devMode && <span className="hint">Demo code: 123456</span>}
               </div>
+              {wakingNote}
               {error && <p className="error-text" role="alert">{error}</p>}
               <button className="btn lg" disabled={busy || code.length !== 6}>Sign in</button>
               <button type="button" className="btn ghost" onClick={() => { setStep('phone'); setCode(''); setError(''); }}>Use another number</button>

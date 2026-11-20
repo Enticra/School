@@ -28,7 +28,7 @@ const outbox = join(dataDir, 'outbox.log');
 const sendWhatsApp = (m: OutboundMessage) => appendFileSync(outbox, `${m.createdAt}\t${m.to}\t${m.template}\t${m.body}\n`);
 const sendOtp = (phone: string, code: string) => console.log(`[otp] ${phone}: ${devMode ? code : '******'}`);
 
-const created = createApp({ db: store.db, save: store.save, devMode, grader, webDist: join(here, '..', '..', 'web', 'dist'), sendWhatsApp, sendOtp,
+const created = createApp({ db: store.db, save: store.save, devMode, database: store.kind.startsWith('postgres') ? 'postgres' : 'built-in', grader, webDist: join(here, '..', '..', 'web', 'dist'), sendWhatsApp, sendOtp,
   whatsApp: whatsAppConfig ? { config: whatsAppConfig, routesFile: join(dataDir, 'whatsapp-routes.json') } : undefined });
 const { portal } = created;
 

@@ -10,6 +10,8 @@ export interface AppOptions {
   db: Db;
   save: () => void;
   devMode: boolean;
+  /** Which database is in use, for /api/health: 'postgres' (DATABASE_URL, e.g. Neon) or 'built-in'. */
+  database?: string;
   grader?: Grader;
   webDist?: string;
   sendWhatsApp?: (msg: OutboundMessage) => void | Promise<void>;
@@ -40,7 +42,7 @@ export function createApp(opts: AppOptions) {
 
   const phoneOf = (raw: unknown) => String(raw ?? '').replace(/\D/g, '').slice(-10);
 
-  app.get('/api/health', (_req, res) => { res.json({ ok: true, grader: portal.grader.name, devMode: opts.devMode }); });
+  app.get('/api/health', (_req, res) => { res.json({ ok: true, grader: portal.grader.name, devMode: opts.devMode, database: opts.database ?? 'unknown' }); });
 
   app.get('/api/config', (_req, res) => {
     res.json({

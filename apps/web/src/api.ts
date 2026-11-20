@@ -37,22 +37,84 @@ function proxy(call: (method: string, args: unknown[]) => Promise<unknown>): Api
 
 // ---------------------------------------------------------------- HTTP backend (apps/api)
 
-async function http<T>(path: string, body: unknown, token?: string): Promise<T> {
-  const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body ?? {}) });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, data.error ?? 'Could not reach the server. Check your connection.');
-  return data as T;
+// The API runs on Render's free plan, which sleeps after 15 minutes without visitors. The first
+// request after that gets a 502/503/504 (or no answer at all) for up to about a minute while it
+// starts again. Instead of showing "could not reach the server", the app waits for /api/health
+// to answer, tells the person the server is starting, and then sends the request again.
+
+const WAKE_LIMIT_MS = 120_000;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+type Waking = (waking: boolean) => void;
+const wakingListeners = new Set<Waking>();
+let waking = false;
+function setWaking(v: boolean) { if (v !== waking) { waking = v; wakingListeners.forEach((fn) => fn(v)); } }
+/** Calls `fn(true)` while the server is starting up after sleeping, and `fn(false)` once it answers. */
+export function onServerWaking(fn: Waking): () => void { wakingListeners.add(fn); fn(waking); return () => { wakingListeners.delete(fn); }; }
+
+let wakeUp: Promise<boolean> | null = null;
+/** Resolves true once /api/health answers ok, or false after about two minutes. Calls share one wait. */
+export function waitForServer(): Promise<boolean> {
+  wakeUp ??= (async () => {
+    const until = Date.now() + WAKE_LIMIT_MS;
+    for (let attempt = 0; Date.now() < until; attempt++) {
+      try {
+        const r = await fetch('/api/health', { cache: 'no-store' });
+        if (r.ok && (await r.json().catch(() => null))?.ok) return true;
+      } catch { /* not answering yet */ }
+      setWaking(true);
+      await sleep(Math.min(1500 * 2 ** attempt, 6000));
+    }
+    return false;
+  })().finally(() => { setWaking(false); wakeUp = null; });
+  return wakeUp;
 }
 
+/** Status codes that come from Render or Vercel while the API is asleep or starting, never from the API itself. */
+const UNAVAILABLE = new Set([502, 503, 504]);
+const OFFLINE = 'Could not reach the server. Check your internet connection and try again.';
+
+/**
+ * `safe` calls only read, so they may be sent again even after a gateway timeout (504), when the
+ * first try might have reached the API. Others are sent again only when the first try certainly did
+ * not reach it (no connection, 502 or 503), so nothing is saved twice.
+ */
+async function http<T>(path: string, body: unknown, token?: string, safe = false): Promise<T> {
+  const send = () => fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body ?? {}) });
+  for (let attempt = 0; ; attempt++) {
+    let res: Response | null = null;
+    try { res = await send(); } catch { /* no connection, or the server did not answer */ }
+    const data = res ? await res.json().catch(() => undefined) : undefined;
+    if (res && !UNAVAILABLE.has(res.status) && data !== undefined) {
+      if (!res.ok) throw new ApiError(res.status, data.error ?? 'Something went wrong. Please try again.');
+      return data as T;
+    }
+    const resend = !res || res.status === 502 || res.status === 503 || safe;
+    if (attempt >= 2 || !(await waitForServer())) throw new ApiError(res?.status ?? 0, OFFLINE);
+    if (!resend) throw new ApiError(res?.status ?? 0, 'The server was starting up. Please try that again.');
+  }
+}
+
+async function getJson<T>(path: string): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try { const r = await fetch(path, { cache: 'no-store' }); if (r.ok) return (await r.json()) as T; } catch { /* asleep */ }
+    if (attempt >= 2 || !(await waitForServer())) throw new ApiError(0, OFFLINE);
+  }
+}
+
+const READ_ONLY = new Set(['me']);
+
 export const httpBackend: Backend = {
-  async config() { const r = await fetch('/api/config'); return r.json(); },
+  config: () => getJson<Config>('/api/config'),
   requestCode: (phone) => http('/api/auth/request', { phone }),
   async verify(phone, code) { return http<Session>('/api/auth/verify', { phone, code }); },
   async restore(token) {
-    try { const r = await http<{ result: Omit<Session, 'token'> }>('/api/rpc/me', { args: [] }, token); return { token, ...r.result }; } catch { return null; }
+    // Only a 401 means the sign-in is gone; if the server is unreachable, keep the token and let the caller decide.
+    try { const r = await http<{ result: Omit<Session, 'token'> }>('/api/rpc/me', { args: [] }, token, true); return { token, ...r.result }; }
+    catch (e) { if (e instanceof ApiError && (e.status === 401 || e.status === 403)) return null; throw e; }
   },
   async logout(token) { await http('/api/auth/logout', {}, token).catch(() => {}); },
-  api: (token) => proxy(async (method, args) => (await http<{ result: unknown }>(`/api/rpc/${method}`, { args }, token)).result),
+  api: (token) => proxy(async (method, args) => (await http<{ result: unknown }>(`/api/rpc/${method}`, { args }, token, READ_ONLY.has(method))).result),
 };
 
 // ---------------------------------------------------------------- In-browser demo backend
