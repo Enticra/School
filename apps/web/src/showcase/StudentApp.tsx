@@ -3,7 +3,7 @@ import { formatDate, isoDate } from '@enticra/core';
 import { Bar, Icon, Loading, PageHead, readImage, useApp, useConfirm, useLoad } from '../ui';
 import { StudentProfile } from '../pages/Students';
 import { GuidanceReport } from './People';
-import { MATHS_CHAPTERS } from './Academics';
+import { MATHS_CHAPTERS, ONLINE, statusOf, type OnlineTest } from './Academics';
 import { Stats, Table, Tabs, dayLabel, useDemo } from './kit';
 import { StudentHomework, TodayPeriods } from './School';
 
@@ -14,6 +14,12 @@ const TRIG: MCQ[] = [
   { q: 'The angle of elevation of the sun is 45°. A 10 m pole casts a shadow of', options: ['5 m', '10 m', '10√3 m', '20 m'], answer: 1, why: 'tan 45° = height ÷ shadow = 1, so the shadow equals the height.', chapter: 'Trigonometry' },
   { q: '(1 + tan²θ) equals', options: ['sec²θ', 'cosec²θ', 'cot²θ', '1'], answer: 0, why: 'Divide sin²θ + cos²θ = 1 by cos²θ.', chapter: 'Trigonometry' },
   { q: 'cos 60° is', options: ['√3/2', '1/2', '1', '0'], answer: 1, why: 'cos 60° = 1/2. Learn the 0°, 30°, 45°, 60°, 90° table.', chapter: 'Trigonometry' },
+];
+const SCIENCE: MCQ[] = [
+  { q: 'The SI unit of electric current is', options: ['Volt', 'Ohm', 'Ampere', 'Watt'], answer: 2, why: 'Current is measured in amperes (A).', chapter: 'Electricity' },
+  { q: 'Ohm’s law is', options: ['V = IR', 'P = VI', 'V = I/R', 'R = VI'], answer: 0, why: 'At constant temperature, voltage = current × resistance.', chapter: 'Electricity' },
+  { q: 'A concave lens always forms an image that is', options: ['Real and inverted', 'Virtual and diminished', 'Real and enlarged', 'Virtual and enlarged'], answer: 1, why: 'A concave lens diverges light, so the image is virtual, erect and smaller.', chapter: 'Optics' },
+  { q: 'The power of a lens of focal length 0.5 m is', options: ['0.5 D', '1 D', '2 D', '5 D'], answer: 2, why: 'P = 1/f = 1/0.5 = 2 dioptres.', chapter: 'Optics' },
 ];
 const MENSURATION: MCQ[] = [
   { q: 'Curved surface area of a cylinder is', options: ['πr²h', '2πrh', '2πr(h + r)', '⅓πr²h'], answer: 1, why: 'CSA = 2πrh. Total adds the two circles: 2πr(h + r).', chapter: 'Mensuration' },
@@ -59,6 +65,8 @@ export function TakeTest({ title, questions, minutes, onDone }: { title: string;
 export function StudentHome() {
   const { api, session, go, toast } = useApp();
   const me = session.children[0];
+  const { mine } = useMyTests();
+  const live = mine.find((x) => statusOf(x) === 'Live');
   const hw = useLoad(() => api.listHomework({ classId: me.classId }), []);
   const prof = useLoad(() => api.getStudent(me.id), []);
   const today = isoDate(new Date());
@@ -68,7 +76,7 @@ export function StudentHome() {
   return (
     <>
       <PageHead eyebrow={formatDate(today)} title={`Hi ${me.name.split(' ')[0]}`} lede={`${prof.data.classLabel} · ${session.school?.shortName}`}>
-        <button className="btn" onClick={() => go({ page: 'tests' })}><Icon name="pen" size={18} />Trigonometry test is live</button>
+        {live && <button className="btn" onClick={() => go({ page: 'tests' })}><Icon name="pen" size={18} />{live.name} is live</button>}
       </PageHead>
       <Stats items={[{ label: 'Attendance', value: <>{prof.data.attendance.pct}<small>%</small></> }, { label: 'Latest test', value: latest ? <>{latest.total}<small>/ {latest.max}</small></> : '–', foot: latest ? `${latest.subject} · ${latest.name}` : undefined }, { label: 'Practice streak', value: '6 days' }, { label: 'Homework due', value: due.filter((h) => !h.mine).length }]} />
       <div className="split" style={{ alignItems: 'start' }}>
@@ -85,21 +93,62 @@ export function StudentHome() {
   );
 }
 
+/** Questions for a teacher-set online test, from the bank that matches its name or subject. */
+function questionsFor(t: OnlineTest): MCQ[] {
+  const n = t.name.toLowerCase();
+  const pool = /trig/.test(n) ? TRIG : /mensur|cone|cylinder|sphere/.test(n) ? MENSURATION : /optic|lens|electric|current|light/.test(n) ? SCIENCE
+    : t.subject === 'Maths' ? [...TRIG, ...MENSURATION] : ['Science', 'Physics'].includes(t.subject) ? SCIENCE : [...TRIG, ...MENSURATION, ...SCIENCE];
+  return pool.slice(0, Math.max(1, Math.min(t.questions, pool.length)));
+}
+
+/** The online tests teachers have set for this student's class, as the teacher and principal see them. */
+function useMyTests() {
+  const { api, session } = useApp();
+  const me = session.children[0];
+  const prof = useLoad(() => api.getStudent(me.id), []);
+  const [tests, setTests] = useDemo<OnlineTest[]>('online-tests', ONLINE);
+  const mine = prof.data ? tests.filter((x) => x.classLabel.split(', ').includes(prof.data!.classLabel)) : [];
+  return { me, ready: !!prof.data, tests, setTests, mine };
+}
+
 export function StudentTests() {
-  const [taking, setTaking] = useState(false);
-  const [score, setScore] = useDemo<number | null>('trig-score', null);
+  const { me, ready, tests, setTests, mine } = useMyTests();
+  const [scores, setScores] = useDemo<Record<string, { score: number; of: number }>>(`online-scores-${me.id}`, { ot2: { score: 14, of: 20 } });
+  const [taking, setTaking] = useState<OnlineTest | null>(null);
+  if (!ready) return <Loading />;
+  const order = { Live: 0, Scheduled: 1, Closed: 2 } as const;
+  const list = [...mine].sort((a, b) => order[statusOf(a)] - order[statusOf(b)]);
+  const finish = (t: OnlineTest, q: number) => (score: number) => {
+    if (scores[t.id] !== undefined) return;
+    setScores((s) => ({ ...s, [t.id]: { score, of: q } }));
+    const pct = Math.round((score / q) * 100);
+    // The teacher's and principal's view of the test count this submission too.
+    setTests(tests.map((x) => (x.id === t.id ? { ...x, submitted: x.of ? Math.min(x.of, x.submitted + 1) : x.submitted + 1, avg: Math.round(((x.avg ?? 0) * x.submitted + pct) / (x.submitted + 1)) } : x)));
+  };
+  if (taking) {
+    const qs = questionsFor(taking);
+    return (
+      <>
+        <PageHead eyebrow="Online tests" title={taking.name} lede={`${taking.subject} · ${qs.length} questions · ${taking.minutes} min`}>
+          <button className="btn ghost" onClick={() => setTaking(null)}>Back to tests</button>
+        </PageHead>
+        <TakeTest title={taking.name} questions={qs} minutes={taking.minutes} onDone={finish(taking, qs.length)} />
+      </>
+    );
+  }
   return (
     <>
       <PageHead eyebrow="Online tests" title="Tests" lede="Timed tests from your teachers. You see your marks and the reason for every answer as soon as you submit." />
-      {taking ? <TakeTest title="Trigonometry quick check" questions={TRIG} minutes={8} onDone={setScore} /> : (
-        <div className="card">
-          <Table head={['Test', 'Subject', 'When', '']} rows={[
-            ['Trigonometry quick check', 'Maths', dayLabel(0) + ', live now', score === null ? <button key="s" className="btn sm" onClick={() => setTaking(true)}>Start · 8 min</button> : <span key="s" className="pill ok">{score} / {TRIG.length}</span>],
-            ['Optics MCQ practice', 'Science', dayLabel(-2), <span key="s" className="pill ok">14 / 20</span>],
-            ['SSLC 2025 Part I (MCQ)', 'Maths', dayLabel(2) + ', 9:30 am', <span key="s" className="pill">Scheduled</span>],
-          ].map((r) => [<b key="n">{r[0]}</b>, r[1], r[2], r[3]])} />
-        </div>
-      )}
+      <div className="card">
+        <Table head={['Test', 'Subject', 'When', '']} empty="No online tests for your class yet." rows={list.map((x) => {
+          const st = statusOf(x); const sc = scores[x.id];
+          return [<b key="n">{x.name}</b>, x.subject, <span key="w" className="small">{x.when}{st === 'Live' ? ', live now' : ''}</span>,
+            sc !== undefined ? <span key="s" className="pill ok">{sc.score} / {sc.of}</span>
+              : st === 'Live' ? <button key="s" className="btn sm" onClick={() => setTaking(x)}>Start · {x.minutes} min</button>
+              : st === 'Scheduled' ? <span key="s" className="pill">Scheduled</span>
+              : <span key="s" className="pill">Closed</span>];
+        })} />
+      </div>
     </>
   );
 }

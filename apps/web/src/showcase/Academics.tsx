@@ -300,8 +300,8 @@ export function QuestionBank() {
 
 // ---------------------------------------------------------------- online tests
 
-type OnlineTest = { id: string; name: string; classLabel: string; subject: string; questions: number; minutes: number; when: string; date?: string; time?: string; status: 'Live' | 'Scheduled' | 'Closed'; submitted: number; of: number; avg: number | null };
-const ONLINE: OnlineTest[] = [
+export type OnlineTest = { id: string; name: string; classLabel: string; subject: string; questions: number; minutes: number; when: string; date?: string; time?: string; status: 'Live' | 'Scheduled' | 'Closed'; submitted: number; of: number; avg: number | null };
+export const ONLINE: OnlineTest[] = [
   { id: 'ot1', name: 'Trigonometry quick check', classLabel: '10-A', subject: 'Maths', questions: 15, minutes: 20, when: dayLabel(0) + ', 2:00 pm', status: 'Live', submitted: 8, of: 12, avg: 71 },
   { id: 'ot2', name: 'Optics MCQ practice', classLabel: '10-A', subject: 'Science', questions: 20, minutes: 25, when: dayLabel(-2), status: 'Closed', submitted: 12, of: 12, avg: 64 },
   { id: 'ot3', name: 'Algebra: quadratic equations', classLabel: '10-B', subject: 'Maths', questions: 15, minutes: 20, when: dayLabel(-5), status: 'Closed', submitted: 10, of: 10, avg: 58 },
@@ -310,6 +310,11 @@ const ONLINE: OnlineTest[] = [
   { id: 'ot6', name: 'Plants around us', classLabel: '4-A', subject: 'EVS', questions: 10, minutes: 15, when: dayLabel(-1), status: 'Closed', submitted: 7, of: 8, avg: 78 },
   { id: 'ot7', name: 'Fractions practice', classLabel: '6-A', subject: 'Maths', questions: 15, minutes: 20, when: dayLabel(1) + ', 11:30 am', status: 'Scheduled', submitted: 0, of: 8, avg: null },
 ];
+/** A scheduled test goes live on its own once its opening date and time have passed. */
+export function statusOf(x: OnlineTest, now = new Date()): OnlineTest['status'] {
+  if (x.status !== 'Scheduled' || !x.date) return x.status;
+  return new Date(`${x.date}T${x.time ?? '00:00'}`) <= now ? 'Live' : 'Scheduled';
+}
 const ITEM = [92, 88, 75, 71, 69, 66, 61, 58, 52, 47, 44, 38, 35, 31, 22];
 
 export function OnlineTests() {
@@ -333,7 +338,8 @@ export function OnlineTests() {
   const startNew = () => { setReopen(null); setEditId(null); setForm({ name: '', classLabel: classes.data?.[0]?.label ?? '10-A', subject: classes.data?.[0]?.subjects[0] ?? 'Maths', minutes: 20, questions: 15, date: '', time: '10:00' }); setOpen(true); };
   const startEdit = (x: OnlineTest) => { setReopen(null); setEditId(x.id); setForm({ name: x.name, classLabel: x.classLabel, subject: x.subject, minutes: x.minutes, questions: x.questions, date: x.date ?? day(2), time: x.time ?? '09:30' }); setOpen(true); };
   const inClass = (label: string) => everyone.filter((s) => label.split(', ').includes(s.classLabel));
-  const formSubjects = [...new Set(form.classLabel.split(', ').flatMap((l) => classes.data?.find((c) => c.label === l)?.subjects ?? []))];
+  // A teacher sets tests only in the subjects they teach, so the test stays in their own list.
+  const formSubjects = [...new Set(form.classLabel.split(', ').flatMap((l) => classes.data?.find((c) => c.label === l)?.subjects ?? []))].filter((x) => session.user.role !== 'teacher' || (session.user.subjects ?? []).includes(x));
   const gradeOfLabel = (l: string) => Number(l.split('-')[0]);
   const grades = [...new Set((classes.data ?? []).map((c) => c.grade))].sort((a, b) => b - a);
   const myLabels = (classes.data ?? []).map((c) => c.label);
@@ -347,7 +353,7 @@ export function OnlineTests() {
       <PageHead eyebrow="Online tests" title="Timed tests, marked instantly" lede={viewOnly ? 'Every online test teachers have set, by standard and class, with how each class did.' : 'Students take MCQ and short-answer tests on any phone. Marks, answer-wise feedback and item analysis appear the moment they submit.'}>
         {!viewOnly && <button className="btn" onClick={startNew}><Icon name="plus" size={18} />New online test</button>}
       </PageHead>
-      <Stats items={[{ label: 'Live now', value: tests.filter((x) => x.status === 'Live').length }, { label: 'Tests this month', value: 18 + tests.length - ONLINE.length }, { label: 'Average score', value: <>63<small>%</small></> }, { label: 'Teacher marking time', value: '0 min', foot: 'Every answer marked automatically' }]} />
+      <Stats items={[{ label: 'Live now', value: tests.filter((x) => statusOf(x) === 'Live').length }, { label: 'Tests this month', value: 18 + tests.length - ONLINE.length }, { label: 'Average score', value: <>63<small>%</small></> }, { label: 'Teacher marking time', value: '0 min', foot: 'Every answer marked automatically' }]} />
       <div className="split" style={{ alignItems: 'start' }}>
         <div className="card stack" style={{ gap: 10 }}>
           <div className="row">
@@ -357,18 +363,18 @@ export function OnlineTests() {
           <Table head={['Test', 'Class', 'When', 'Status', 'Submitted', 'Average', ...(viewOnly ? [] : [''])]} empty="No online tests for this standard or class." rows={shown.map((x) => [
             <button key="n" className="btn sm quiet" onClick={() => setSel(x.id)} aria-pressed={x.id === sel} style={{ whiteSpace: 'normal', height: 'auto', padding: '6px 12px', textAlign: 'left' }}>{x.name}</button>,
             `${x.classLabel} · ${x.subject}`, <span key="w" className="small">{x.when}</span>,
-            <span key="s" className={`pill ${x.status === 'Live' ? 'accent' : x.status === 'Closed' ? 'ok' : ''}`}>{x.status === 'Live' && <span className="dot" />}{x.status}</span>,
+            <span key="s" className={`pill ${statusOf(x) === 'Live' ? 'accent' : statusOf(x) === 'Closed' ? 'ok' : ''}`}>{statusOf(x) === 'Live' && <span className="dot" />}{statusOf(x)}</span>,
             <span key="c" className="num">{x.submitted}/{x.of}</span>, x.avg === null ? '–' : <b key="a" className="num">{x.avg}%</b>,
-            ...(viewOnly ? [] : [x.status === 'Scheduled' ? <button key="e" className="btn sm ghost" aria-label={`Edit ${x.name}`} onClick={() => startEdit(x)}>Edit</button>
-              : x.status === 'Live' ? <button key="e" className="btn sm ghost" aria-label={`Add 10 minutes to ${x.name}`} onClick={() => extend(x)}>+10 min</button>
+            ...(viewOnly ? [] : [statusOf(x) === 'Scheduled' ? <button key="e" className="btn sm ghost" aria-label={`Edit ${x.name}`} onClick={() => startEdit(x)}>Edit</button>
+              : statusOf(x) === 'Live' ? <button key="e" className="btn sm ghost" aria-label={`Add 10 minutes to ${x.name}`} onClick={() => extend(x)}>+10 min</button>
               : <button key="e" className="btn sm ghost" aria-label={`Reopen ${x.name}`} onClick={() => startReopen(x)}>Reopen</button>]),
           ])} />
         </div>
         {t && <div className="card stack" style={{ gap: 12 }}>
           <div className="card-head" style={{ margin: 0 }}><h2>{t.name}</h2><span className="dim small">{t.questions} questions · {t.minutes} min</span></div>
-          {!viewOnly && t.status === 'Live' && <div className="row"><span className="pill accent"><span className="dot" />{t.submitted} of {t.of} submitted</span><button className="btn sm ghost" onClick={() => extend(t)}>Add 10 minutes</button><button className="btn sm ghost" onClick={() => void closeNow(t)}>Close now</button></div>}
-          {!viewOnly && t.status === 'Closed' && <div className="row"><span className="small">{t.submitted < t.of ? `${t.of - t.submitted} students missed it.` : 'Everyone wrote it.'}</span>{t.submitted < t.of && <button className="btn sm ghost" onClick={() => startReopen(t, 'missed')}>Reopen for those who missed it</button>}<button className="btn sm ghost" onClick={() => startReopen(t, 'all')}>Retest the whole class</button></div>}
-          {t.status === 'Scheduled' ? <div className="empty stack" style={{ alignItems: 'center' }}><span>Opens {t.when}. Students and parents get a WhatsApp reminder the evening before.</span>{!viewOnly && <><button className="btn sm ghost" onClick={async () => { if (await confirm({ title: `Cancel ${t.name}?`, body: 'The test is removed before it opens. No one is notified, because no reminder has gone out yet.', confirm: 'Cancel test', danger: true })) { setTests(tests.filter((x) => x.id !== t.id)); setSel(tests.find((x) => x.id !== t.id)?.id ?? ''); toast(`${t.name} cancelled.`); } }}>Cancel this test</button><button className="btn sm ghost" onClick={() => startEdit(t)}>Edit</button></>}</div> : (
+          {!viewOnly && statusOf(t) === 'Live' && <div className="row"><span className="pill accent"><span className="dot" />{t.submitted} of {t.of} submitted</span><button className="btn sm ghost" onClick={() => extend(t)}>Add 10 minutes</button><button className="btn sm ghost" onClick={() => void closeNow(t)}>Close now</button></div>}
+          {!viewOnly && statusOf(t) === 'Closed' && <div className="row"><span className="small">{t.submitted < t.of ? `${t.of - t.submitted} students missed it.` : 'Everyone wrote it.'}</span>{t.submitted < t.of && <button className="btn sm ghost" onClick={() => startReopen(t, 'missed')}>Reopen for those who missed it</button>}<button className="btn sm ghost" onClick={() => startReopen(t, 'all')}>Retest the whole class</button></div>}
+          {statusOf(t) === 'Scheduled' ? <div className="empty stack" style={{ alignItems: 'center' }}><span>Opens {t.when}. Students and parents get a WhatsApp reminder the evening before.</span>{!viewOnly && <><button className="btn sm ghost" onClick={async () => { if (await confirm({ title: `Cancel ${t.name}?`, body: 'The test is removed before it opens. No one is notified, because no reminder has gone out yet.', confirm: 'Cancel test', danger: true })) { setTests(tests.filter((x) => x.id !== t.id)); setSel(tests.find((x) => x.id !== t.id)?.id ?? ''); toast(`${t.name} cancelled.`); } }}>Cancel this test</button><button className="btn sm ghost" onClick={() => startEdit(t)}>Edit</button></>}</div> : (
             <>
               <span className="eyebrow">Item analysis · share who got it right</span>
               <div className="stack" style={{ gap: 8 }}>{ITEM.slice(0, 8).map((p, i) => <Bar key={i} value={Math.max(10, p - (t.id === 'ot3' ? 9 : 0))} label={`Q${i + 1}`} sub={i === 7 ? 'most chose (b): common misconception' : undefined} />)}</div>
