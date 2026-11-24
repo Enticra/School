@@ -600,20 +600,25 @@ const TT = ['Maths', 'Science', 'English', 'Tamil', 'Social', 'Maths', 'PT', 'Li
 
 export function Timetable({ id }: { id?: string }) {
   const { api, toast } = useApp();
-  const teachers = useLoad(() => api.teacherOverview(), []);
   const firstDay = () => { const d = new Date(); if (d.getDay() === 0) d.setDate(d.getDate() + 1); return isoDate(d); };
-  const [who, setWho] = useState('u_s1_science');
+  const [chosen, setWho] = useState('');
   const [date, setDate] = useState(firstDay);
-  const subsFor = useLoad(() => api.substitutions(who, date), [who, date]);
+  // Only teachers who are actually away that day: the staff register if it is saved, otherwise approved leave.
+  const register = useLoad(() => api.getStaffAttendance(date), [date]);
+  const reg = register.data?.date === date ? register.data : null;
+  const away = (reg?.staff ?? []).filter((t) => t.mark === 'A' || t.mark === 'L' || t.mark === 'OD');
+  const who = away.find((t) => t.id === chosen)?.id ?? away[0]?.id ?? '';
+  const subsFor = useLoad(() => (who ? api.substitutions(who, date) : Promise.resolve(null)), [who, date]);
   const [subs, setSubs] = useDemo<Record<string, string>>('subs-v2', {});
   const [notified, setNotified] = useDemo<string[]>('subs-notified-v2', []);
   const [confirm, confirmEl] = useConfirm();
   const key = `${who}|${date}`;
   const done = notified.includes(key);
-  const periods = subsFor.data?.periods ?? [];
+  const periods = who ? subsFor.data?.periods ?? [] : [];
   const pk = (n: number) => `${key}|${n}`;
   const allPicked = periods.length > 0 && periods.every((x) => subs[pk(x.period)]);
-  const name = teachers.data?.find((t) => t.id === who)?.name ?? subsFor.data?.teacher ?? '';
+  const name = away.find((t) => t.id === who)?.name ?? subsFor.data?.teacher ?? '';
+  const why = (m: string | null) => (m === 'A' ? 'absent' : m === 'OD' ? 'on duty' : 'on leave');
   return (
     <>
       {confirmEl}
@@ -622,13 +627,13 @@ export function Timetable({ id }: { id?: string }) {
         <div className="row between">
           <span className="row" style={{ gap: 8 }}>
             <label htmlFor="sb-t" className="small">Teacher on leave</label>
-            <select id="sb-t" className="input" style={{ width: 'auto' }} value={who} onChange={(e) => setWho(e.target.value)}>{(teachers.data ?? []).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select>
+            <select id="sb-t" className="input" style={{ width: 'auto' }} value={who} disabled={!away.length} onChange={(e) => setWho(e.target.value)}>{away.length ? away.map((t) => <option key={t.id} value={t.id}>{t.name} ({why(t.mark)})</option>) : <option value="">Nobody</option>}</select>
             <label htmlFor="sb-d" className="small">on</label>
             <input id="sb-d" type="date" className="input" style={{ width: 170 }} value={date} onChange={(e) => e.target.value && setDate(e.target.value)} />
           </span>
           {periods.length > 0 && (done ? <span className="pill ok">Covered and notified</span> : <span className="pill bad">{periods.filter((x) => !subs[pk(x.period)]).length} periods uncovered</span>)}
         </div>
-        {!subsFor.data ? <Loading /> : !subsFor.data.day ? <span className="dim">No classes on Sundays.</span> : periods.length === 0 ? <span className="dim">{name} has no periods on {subsFor.data.day}.</span> : periods.map((g) => (
+        {!reg ? <Loading /> : !away.length ? <span className="dim">Every teacher is in school on {formatDate(date)}{reg.record ? ' (staff register)' : ' (no approved leave; staff register not marked yet)'}. No periods need cover.</span> : !subsFor.data ? <Loading /> : !subsFor.data.day ? <span className="dim">No classes on Sundays.</span> : periods.length === 0 ? <span className="dim">{name} has no periods on {subsFor.data.day}.</span> : periods.map((g) => (
           <div key={g.period} className="row between" style={{ flexWrap: 'wrap' }}>
             <span>{g.classLabel} {g.subject}, period {g.period} ({g.time})</span>
             <select aria-label={`Substitute for ${g.classLabel} period ${g.period}`} className="input" style={{ width: 'auto', minWidth: 260 }} disabled={done} value={subs[pk(g.period)] ?? ''} onChange={(e) => setSubs({ ...subs, [pk(g.period)]: e.target.value })}>

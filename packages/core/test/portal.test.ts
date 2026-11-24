@@ -400,6 +400,16 @@ describe('school exams: timetable, halls, seating and hall tickets for every sta
     expect(r.periods.length).toBeGreaterThan(0);
     for (const p of r.periods) expect(p.free.some((f) => f.id === 'u_s1_science')).toBe(false);
   });
+  it('never offers a teacher who is away that day as a substitute', () => {
+    const date = '2026-10-26';
+    const day = portal.getStaffAttendance(P(), date);
+    const marks = Object.fromEntries(day.staff.map((t) => [t.id, t.id === 'u_s1_science' ? 'A' : t.id === 'u_s1_maths' ? 'L' : 'P'])) as Record<string, 'P' | 'A' | 'L'>;
+    portal.markStaffAttendance(P(), date, marks);
+    const away = portal.getStaffAttendance(P(), date).staff.filter((t) => t.mark === 'A' || t.mark === 'L' || t.mark === 'OD').map((t) => t.id).sort();
+    expect(away).toEqual(['u_s1_maths', 'u_s1_science']);
+    const r = portal.substitutions(P(), 'u_s1_science', date);
+    for (const p of r.periods) expect(p.free.some((f) => f.id === 'u_s1_maths')).toBe(false);
+  });
 });
 
 describe('class advisors, class timetables and subject teachers', () => {

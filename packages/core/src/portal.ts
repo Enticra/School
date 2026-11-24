@@ -1257,6 +1257,21 @@ export class Portal {
     return out;
   }
 
+  /** Teachers not in school on a day, with why: the saved register wins; with no register, approved leave counts. */
+  private awayOn(schoolId: string, date: string): Map<string, StaffMark> {
+    const record = this.db.staffAttendance.find((r) => r.schoolId === schoolId && r.date === date);
+    const out = new Map<string, StaffMark>();
+    for (const t of this.teachersOf(schoolId)) {
+      let mark: StaffMark | undefined = record?.marks[t.id];
+      if (!mark) {
+        const leave = this.db.staffLeave.find((l) => l.schoolId === schoolId && l.userId === t.id && l.status === 'Approved' && this.leaveDates(l).includes(date));
+        if (leave) mark = leave.kind === 'On duty' ? 'OD' : 'L';
+      }
+      if (mark && mark !== 'P') out.set(t.id, mark);
+    }
+    return out;
+  }
+
   /** The staff register for a day: every teacher, their mark, and approved leave filled in. */
   getStaffAttendance(actor: User, date: string) {
     this.role(actor, 'principal');
@@ -1452,7 +1467,9 @@ export class Portal {
     const d = (new Date(`${date}T12:00:00`).getDay() + 6) % 7;
     if (!(d < TT_DAYS.length)) return { teacher: t.name, day: null, periods: [] };
     const grid = this.grid(school.id);
-    const teachers = this.teachersOf(school.id).filter((u) => u.id !== t.id);
+    // Teachers who are absent, on leave or on duty that day cannot cover a period.
+    const away = /^\d{4}-\d{2}-\d{2}$/.test(date) ? this.awayOn(school.id, date) : new Map<string, StaffMark>();
+    const teachers = this.teachersOf(school.id).filter((u) => u.id !== t.id && !away.has(u.id));
     const periods = TT_PERIODS.flatMap((time, p) => {
       const cid = Object.keys(grid).find((k) => grid[k][d][p]?.teacherId === t.id);
       if (!cid) return [];
