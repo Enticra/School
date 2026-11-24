@@ -1,10 +1,11 @@
 import type {
-  Activity, AnswerScript, AttendanceMark, AttendanceRecord, ClassRoom, Db, Exam, ExamHall, ExamPaper, ExamPlan, ExamSeat, ExamTiming, Homework, HomeworkSubmission, MarkSheet, NotifyKey,
+  Activity, AnswerScript, AttendanceMark, AttendanceRecord, ClassRoom, Db, Exam, ExamHall, ExamPaper, ExamPlan, ExamSeat, ExamTiming, Homework, HomeworkSubmission, MarkSheet, NotifyKey, OnlineAttempt, OnlineTest,
   LeaveKind, OutboundMessage, Question, ResponseGrade, Role, School, SchoolBranding, SchoolSettings, ScriptPage, StaffLeave, StaffMark, Student, User,
 } from './types';
 import { examMax, mockGrader, scriptTotal, type Grader } from './grading';
 import { render } from './templates';
 import { allocateSeats, groupSittings } from './seating';
+import { pickQuestions } from './questions';
 import { defaultSettings } from './seed';
 import { addDays, classLabel, examTimingFor, clone, hhmm, inWindow, isoDate, localDates, pct, round1, uid, academicYear } from './util';
 
@@ -47,6 +48,8 @@ export class Portal {
     this.db.timetableEdits ??= [];
     this.db.staffAttendance ??= [];
     this.db.staffLeave ??= [];
+    this.db.onlineTests ??= [];
+    this.db.onlineAttempts ??= [];
   }
 
   // ---------------------------------------------------------------- guards
@@ -553,6 +556,206 @@ export class Portal {
     this.audit(actor, h.schoolId, 'homework.deleted', `${h.subject}: ${h.title}${n ? ` (${n} hand-ins removed)` : ''}`);
     this.changed();
     return { deleted: h.title, submissionsRemoved: n };
+  }
+
+  // ---------------------------------------------------------------- online tests
+
+  /** When a test stops taking answers: its teacher's early close, or opening time plus its minutes. */
+  private onlineEnd(t: OnlineTest): Date {
+    const end = new Date(new Date(t.opensAt).getTime() + t.minutes * 60_000);
+    return t.closedAt && new Date(t.closedAt) < end ? new Date(t.closedAt) : end;
+  }
+
+  private onlineStatus(t: OnlineTest): 'scheduled' | 'live' | 'closed' {
+    const now = this.now();
+    if (now < new Date(t.opensAt) && !t.closedAt) return 'scheduled';
+    return now < this.onlineEnd(t) ? 'live' : 'closed';
+  }
+
+  /** The students a test is for: everyone in its classes, or only those it was reopened for. */
+  private onlineRoster(t: OnlineTest) {
+    return this.db.students.filter((s) => t.classIds.includes(s.classId) && (!t.onlyStudentIds || t.onlyStudentIds.includes(s.id)));
+  }
+
+  /** A test the actor may see: in one of their classes, and for a teacher in a subject they teach or one they set. */
+  private onlineFor(actor: User, testId: string): OnlineTest {
+    const t = this.db.onlineTests.find((x) => x.id === testId);
+    if (!t) throw new PortalError(404, 'Online test not found.');
+    const school = this.school(actor, t.schoolId);
+    const mine = this.listClasses(actor).map((c) => c.id);
+    if (t.schoolId !== school.id || !t.classIds.some((id) => mine.includes(id))) throw new PortalError(403, 'This test is not for your class.');
+    if (actor.role === 'teacher' && t.createdBy !== actor.id && !(actor.subjects ?? []).includes(t.subject)) throw new PortalError(403, 'This test is not in a subject you teach.');
+    if (actor.role === 'student' && t.onlyStudentIds && !t.onlyStudentIds.some((id) => actor.studentIds?.includes(id))) throw new PortalError(403, 'This test was reopened only for students who missed it.');
+    return t;
+  }
+
+  private onlineEditable(actor: User, testId: string): OnlineTest {
+    this.role(actor, 'teacher');
+    const t = this.onlineFor(actor, testId);
+    if (t.createdBy !== actor.id && !(actor.subjects ?? []).includes(t.subject)) throw new PortalError(403, 'Only a teacher of this subject can change this test.');
+    return t;
+  }
+
+  /** Online tests for the actor's classes, newest opening first. Students see their own score once they submit. */
+  listOnlineTests(actor: User, opts: { classId?: string } = {}) {
+    const school = this.school(actor);
+    const mine = this.listClasses(actor).map((c) => c.id);
+    const kids = actor.studentIds ?? [];
+    return this.db.onlineTests
+      .filter((t) => t.schoolId === school.id && t.classIds.some((id) => mine.includes(id)) && (!opts.classId || t.classIds.includes(opts.classId)))
+      .filter((t) => actor.role !== 'teacher' || t.createdBy === actor.id || (actor.subjects ?? []).includes(t.subject))
+      .filter((t) => (actor.role !== 'student' && actor.role !== 'parent') || !t.onlyStudentIds || t.onlyStudentIds.some((id) => kids.includes(id)))
+      .sort((a, b) => b.opensAt.localeCompare(a.opensAt))
+      .map((t) => {
+        const attempts = this.db.onlineAttempts.filter((a) => a.testId === t.id);
+        const own = actor.role === 'student' ? attempts.find((a) => kids.includes(a.studentId)) : undefined;
+        return {
+          id: t.id, name: t.name, subject: t.subject, classIds: t.classIds,
+          classLabel: t.classIds.map((id) => this.db.classes.find((c) => c.id === id)).filter((c): c is ClassRoom => !!c).map(classLabel).join(', '),
+          opensAt: t.opensAt, endsAt: this.onlineEnd(t).toISOString(), minutes: t.minutes, questions: t.questions.length,
+          status: this.onlineStatus(t), retestOf: t.retestOf ?? null, reopenedFor: t.onlyStudentIds?.length ?? null,
+          teacher: this.userById(t.createdBy)?.name ?? '', createdBy: t.createdBy,
+          of: this.onlineRoster(t).length, submitted: attempts.length,
+          avg: attempts.length ? Math.round(attempts.reduce((n, a) => n + pct(a.score, a.of), 0) / attempts.length) : null,
+          mine: own ? { score: own.score, of: own.of, submittedAt: own.submittedAt } : null,
+        };
+      });
+  }
+
+  /** The paper for a student: questions without answers while it is live, with answers and reasons once they submit or it closes. */
+  onlinePaper(actor: User, testId: string) {
+    this.role(actor, 'student', 'parent');
+    const t = this.onlineFor(actor, testId);
+    const row = this.listOnlineTests(actor).find((x) => x.id === t.id)!;
+    const own = this.db.onlineAttempts.find((a) => a.testId === t.id && actor.studentIds?.includes(a.studentId));
+    const reveal = !!own || row.status === 'closed';
+    return {
+      test: row,
+      questions: row.status === 'scheduled' ? [] : t.questions.map((q): { q: string; options: string[]; answer?: number; why?: string } => (reveal ? { q: q.q, options: q.options, answer: q.answer, why: q.why } : { q: q.q, options: q.options })),
+      answers: own?.answers ?? null,
+    };
+  }
+
+  /** One online test for its teachers and the principal: questions with answers, item analysis and every student's score. */
+  getOnlineTest(actor: User, testId: string) {
+    this.role(actor, 'teacher', 'principal');
+    const t = this.onlineFor(actor, testId);
+    const row = this.listOnlineTests(actor).find((x) => x.id === t.id)!;
+    const attempts = this.db.onlineAttempts.filter((a) => a.testId === t.id);
+    const results = this.onlineRoster(t).sort((a, b) => a.classId.localeCompare(b.classId) || a.rollNo - b.rollNo).map((s) => {
+      const a = attempts.find((x) => x.studentId === s.id);
+      return { studentId: s.id, name: s.name, rollNo: s.rollNo, classLabel: classLabel(this.db.classes.find((c) => c.id === s.classId)!), score: a?.score ?? null, of: a?.of ?? t.questions.length, submittedAt: a?.submittedAt ?? null };
+    });
+    const items = t.questions.map((q, i) => {
+      const picks = q.options.map((_, j) => attempts.filter((a) => a.answers[i] === j).length);
+      return { q: q.q, options: q.options, answer: q.answer, why: q.why, right: attempts.length ? pct(picks[q.answer], attempts.length) : null, picks };
+    });
+    return { test: row, questions: items, results };
+  }
+
+  private onlineInput(actor: User, input: { name?: string; classIds?: string[]; subject?: string; minutes?: number; opensAt?: string }) {
+    if (!input.name?.trim()) throw new PortalError(400, 'Give the test a name.');
+    if (!input.classIds?.length) throw new PortalError(400, 'Pick a class.');
+    const classes = input.classIds.map((id) => this.classFor(actor, id));
+    if (!input.subject || !classes.every((c) => c.subjects.includes(input.subject!))) throw new PortalError(400, 'Pick a subject taught in this class.');
+    if (actor.role === 'teacher' && !(actor.subjects ?? []).includes(input.subject)) throw new PortalError(403, 'You can set tests only in subjects you teach.');
+    const minutes = Number(input.minutes);
+    if (!Number.isInteger(minutes) || minutes < 5 || minutes > 180) throw new PortalError(400, 'A test runs between 5 and 180 minutes.');
+    if (!input.opensAt || !/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$/.test(input.opensAt)) throw new PortalError(400, 'Pick the date and time it opens.');
+    if (input.opensAt.slice(0, 10) < isoDate(this.now())) throw new PortalError(400, 'The test must open today or later.');
+    return { name: input.name.trim(), classIds: classes.map((c) => c.id), subject: input.subject, minutes, opensAt: input.opensAt };
+  }
+
+  /** A teacher schedules a test. Questions come from the bank for the chapter in its name. Nothing is sent to parents. */
+  createOnlineTest(actor: User, input: { name: string; classIds: string[]; subject: string; minutes: number; questions: number; opensAt: string; reopen?: { testId: string; who: 'missed' | 'all' } }) {
+    this.role(actor, 'teacher');
+    const school = this.school(actor);
+    const v = this.onlineInput(actor, input);
+    const count = Number(input.questions);
+    if (!Number.isInteger(count) || count < 1 || count > 50) throw new PortalError(400, 'Choose between 1 and 50 questions.');
+    let questions = pickQuestions(v.name, v.subject, count);
+    let onlyStudentIds: string[] | undefined;
+    let retestOf: string | undefined;
+    if (input.reopen) {
+      const first = this.onlineEditable(actor, input.reopen.testId);
+      retestOf = first.id;
+      if (input.reopen.who === 'missed') {
+        // The same paper, for only those who did not write it.
+        const wrote = this.db.onlineAttempts.filter((a) => a.testId === first.id).map((a) => a.studentId);
+        onlyStudentIds = this.onlineRoster(first).filter((s) => !wrote.includes(s.id)).map((s) => s.id);
+        if (!onlyStudentIds.length) throw new PortalError(409, 'Everyone wrote this test, so there is no one to reopen it for.');
+        questions = first.questions.map((q) => ({ ...q, options: [...q.options] }));
+        v.classIds = first.classIds;
+        v.subject = first.subject;
+      }
+    }
+    const t: OnlineTest = { id: uid('ot'), schoolId: school.id, ...v, questions, onlyStudentIds, retestOf, createdBy: actor.id, createdAt: this.now().toISOString() };
+    this.db.onlineTests.push(t);
+    this.audit(actor, school.id, 'online_test.created', `${t.subject}: ${t.name}, opens ${t.opensAt.replace('T', ' ')}`);
+    this.changed();
+    return this.listOnlineTests(actor).find((x) => x.id === t.id)!;
+  }
+
+  /** Change a test before it opens. */
+  updateOnlineTest(actor: User, testId: string, input: { name: string; classIds: string[]; subject: string; minutes: number; questions: number; opensAt: string }) {
+    const t = this.onlineEditable(actor, testId);
+    if (this.onlineStatus(t) !== 'scheduled') throw new PortalError(409, 'This test has already opened, so it can no longer be changed.');
+    const v = this.onlineInput(actor, t.onlyStudentIds ? { ...input, classIds: t.classIds, subject: t.subject } : input);
+    const count = Number(input.questions);
+    const regen = !t.onlyStudentIds && (v.name !== t.name || v.subject !== t.subject || count !== t.questions.length);
+    Object.assign(t, v);
+    if (regen && Number.isInteger(count) && count >= 1 && count <= 50) t.questions = pickQuestions(v.name, v.subject, count);
+    this.audit(actor, t.schoolId, 'online_test.updated', `${t.subject}: ${t.name}`);
+    this.changed();
+    return this.listOnlineTests(actor).find((x) => x.id === t.id)!;
+  }
+
+  /** Give a live test more time. Students still writing see the new end time. */
+  extendOnlineTest(actor: User, testId: string, minutes = 10) {
+    const t = this.onlineEditable(actor, testId);
+    if (this.onlineStatus(t) !== 'live') throw new PortalError(409, 'Only a live test can be given more time.');
+    t.minutes = Math.min(t.minutes + Math.max(1, Math.min(60, Math.round(minutes))), 240);
+    this.changed();
+    return this.listOnlineTests(actor).find((x) => x.id === t.id)!;
+  }
+
+  /** Close a live test now. Students who have not submitted can no longer write it. */
+  closeOnlineTest(actor: User, testId: string) {
+    const t = this.onlineEditable(actor, testId);
+    if (this.onlineStatus(t) !== 'live') throw new PortalError(409, 'This test is not live.');
+    t.closedAt = this.now().toISOString();
+    this.audit(actor, t.schoolId, 'online_test.closed', `${t.subject}: ${t.name}`);
+    this.changed();
+    return this.listOnlineTests(actor).find((x) => x.id === t.id)!;
+  }
+
+  /** Cancel a test before it opens. */
+  deleteOnlineTest(actor: User, testId: string) {
+    const t = this.onlineEditable(actor, testId);
+    if (this.onlineStatus(t) !== 'scheduled') throw new PortalError(409, 'This test has already opened. Close it instead.');
+    this.db.onlineTests = this.db.onlineTests.filter((x) => x.id !== t.id);
+    this.audit(actor, t.schoolId, 'online_test.cancelled', `${t.subject}: ${t.name}`);
+    this.changed();
+    return { deleted: t.name };
+  }
+
+  /** A student submits their answers once. Marked at once; the answers and reasons come back. */
+  submitOnlineTest(actor: User, testId: string, answers: (number | null)[]) {
+    this.role(actor, 'student');
+    const t = this.onlineFor(actor, testId);
+    const st = this.onlineRoster(t).find((s) => actor.studentIds?.includes(s.id));
+    if (!st) throw new PortalError(403, 'This test is not for you.');
+    if (this.onlineStatus(t) === 'scheduled') throw new PortalError(409, 'This test has not opened yet.');
+    // A minute of grace, so answers sent as the timer runs out (or as the teacher closes it) still count.
+    if (this.now().getTime() > this.onlineEnd(t).getTime() + 60_000) throw new PortalError(409, 'This test has closed.');
+    if (this.db.onlineAttempts.some((a) => a.testId === t.id && a.studentId === st.id)) throw new PortalError(409, 'You have already submitted this test.');
+    if (!Array.isArray(answers)) throw new PortalError(400, 'Send your answers.');
+    const clean = t.questions.map((q, i) => { const a = answers[i]; return Number.isInteger(a) && (a as number) >= 0 && (a as number) < q.options.length ? (a as number) : null; });
+    const score = clean.filter((a, i) => a === t.questions[i].answer).length;
+    const attempt: OnlineAttempt = { id: uid('oa'), schoolId: t.schoolId, testId: t.id, studentId: st.id, answers: clean, score, of: t.questions.length, submittedAt: this.now().toISOString() };
+    this.db.onlineAttempts.push(attempt);
+    this.changed();
+    return { score, of: attempt.of, answers: clean, review: t.questions.map((q) => ({ answer: q.answer, why: q.why })) };
   }
 
   // ---------------------------------------------------------------- exams and marks

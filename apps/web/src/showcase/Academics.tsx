@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { formatDate, isoDate } from '@enticra/core';
-import { Icon, Loading, Modal, PageHead, Seg, relTime, useApp, useConfirm, useLoad } from '../ui';
+import { Icon, Loading, Modal, PageHead, Seg, relTime, useAction, useApp, useConfirm, useLoad } from '../ui';
+import type { Result } from '../api';
 import { DEFAULT_BP, PART_TYPES, PRESETS, PaperView, SAMPLE_POOLS, bpProblem, bpTotal, paperParts, paperQuestions, type Blueprint, type Item, type PartType, type Pools, type SavedPaper } from './Paper';
 import { WaBubble } from '../pages/Messages';
 import { TimetableView } from './School';
@@ -300,111 +301,115 @@ export function QuestionBank() {
 
 // ---------------------------------------------------------------- online tests
 
-export type OnlineTest = { id: string; name: string; classLabel: string; subject: string; questions: number; minutes: number; when: string; date?: string; time?: string; status: 'Live' | 'Scheduled' | 'Closed'; submitted: number; of: number; avg: number | null };
-export const ONLINE: OnlineTest[] = [
-  { id: 'ot1', name: 'Trigonometry quick check', classLabel: '10-A', subject: 'Maths', questions: 15, minutes: 20, when: dayLabel(0) + ', 2:00 pm', status: 'Live', submitted: 8, of: 12, avg: 71 },
-  { id: 'ot2', name: 'Optics MCQ practice', classLabel: '10-A', subject: 'Science', questions: 20, minutes: 25, when: dayLabel(-2), status: 'Closed', submitted: 12, of: 12, avg: 64 },
-  { id: 'ot3', name: 'Algebra: quadratic equations', classLabel: '10-B', subject: 'Maths', questions: 15, minutes: 20, when: dayLabel(-5), status: 'Closed', submitted: 10, of: 10, avg: 58 },
-  { id: 'ot4', name: 'SSLC 2025 Part I (MCQ)', classLabel: '10-A, 10-B', subject: 'Maths', questions: 14, minutes: 15, when: dayLabel(2) + ', 9:30 am', status: 'Scheduled', submitted: 0, of: 22, avg: null },
-  { id: 'ot5', name: 'Current electricity check', classLabel: '12-A', subject: 'Physics', questions: 20, minutes: 30, when: dayLabel(-3), status: 'Closed', submitted: 8, of: 8, avg: 67 },
-  { id: 'ot6', name: 'Plants around us', classLabel: '4-A', subject: 'EVS', questions: 10, minutes: 15, when: dayLabel(-1), status: 'Closed', submitted: 7, of: 8, avg: 78 },
-  { id: 'ot7', name: 'Fractions practice', classLabel: '6-A', subject: 'Maths', questions: 15, minutes: 20, when: dayLabel(1) + ', 11:30 am', status: 'Scheduled', submitted: 0, of: 8, avg: null },
-];
-/** A scheduled test goes live on its own once its opening date and time have passed. */
-export function statusOf(x: OnlineTest, now = new Date()): OnlineTest['status'] {
-  if (x.status !== 'Scheduled' || !x.date) return x.status;
-  return new Date(`${x.date}T${x.time ?? '00:00'}`) <= now ? 'Live' : 'Scheduled';
+type OnlineRow = Result<'listOnlineTests'>[number];
+const STATUS_LABEL = { live: 'Live', scheduled: 'Scheduled', closed: 'Closed' } as const;
+/** "24 Nov 2026, 2:00 pm" from a local YYYY-MM-DDTHH:MM. */
+export const opensLabel = (opensAt: string) => `${formatDate(opensAt.slice(0, 10))}, ${new Date(`2000-01-01T${opensAt.slice(11, 16)}`).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })}`;
+export function StatusPill({ status }: { status: OnlineRow['status'] }) {
+  return <span className={`pill ${status === 'live' ? 'accent' : status === 'closed' ? 'ok' : ''}`}>{status === 'live' && <span className="dot" />}{STATUS_LABEL[status]}</span>;
 }
-const ITEM = [92, 88, 75, 71, 69, 66, 61, 58, 52, 47, 44, 38, 35, 31, 22];
 
 export function OnlineTests() {
-  const { api, toast, session } = useApp();
-  const viewOnly = session.user.role === 'principal';
+  const { api, session } = useApp();
+  const teacher = session.user.role === 'teacher';
   const [std, setStd] = useState('all');
   const [cls, setCls] = useState('all');
-  const everyone = useRoster();
   const classes = useLoad(() => api.listClasses(), []);
-  const [tests, setTests] = useDemo<OnlineTest[]>('online-tests', ONLINE);
-  const [sel, setSel] = useState('ot2');
+  const list = useLoad(() => api.listOnlineTests(), []);
+  const [sel, setSel] = useState<string | null>(null);
   const [confirm, confirmEl] = useConfirm();
+  const { run, busy } = useAction();
   const [open, setOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
-  const [reopen, setReopen] = useState<OnlineTest | null>(null);
+  const [reopen, setReopen] = useState<OnlineRow | null>(null);
   const [who, setWho] = useState<'missed' | 'all'>('missed');
-  const [form, setForm] = useState({ name: 'Mensuration MCQ', classLabel: '10-B', subject: 'Maths', minutes: 20, questions: 15, date: '', time: '10:00' });
-  const startReopen = (x: OnlineTest, mode: 'missed' | 'all' = x.submitted < x.of ? 'missed' : 'all') => { setEditId(null); setReopen(x); setWho(mode); setForm({ name: `${x.name} (${mode === 'all' ? 'retest' : 'for those who missed it'})`, classLabel: x.classLabel, subject: x.subject, minutes: x.minutes, questions: x.questions, date: day(1), time: '15:30' }); setOpen(true); };
-  const extend = (x: OnlineTest) => { setTests(tests.map((y) => (y.id === x.id ? { ...y, minutes: y.minutes + 10 } : y))); toast(`${x.name} now runs ${x.minutes + 10} minutes. Students still writing see the new end time.`); };
-  const closeNow = async (x: OnlineTest) => { if (await confirm({ title: `Close ${x.name} now?`, body: `${x.of - x.submitted} students have not submitted. What they have answered so far is marked.`, confirm: 'Close now' })) { setTests(tests.map((y) => (y.id === x.id ? { ...y, status: 'Closed', when: dayLabel(0) } : y))); toast(`${x.name} closed. Results are ready.`); } };
-  const startNew = () => { setReopen(null); setEditId(null); setForm({ name: '', classLabel: classes.data?.[0]?.label ?? '10-A', subject: classes.data?.[0]?.subjects[0] ?? 'Maths', minutes: 20, questions: 15, date: '', time: '10:00' }); setOpen(true); };
-  const startEdit = (x: OnlineTest) => { setReopen(null); setEditId(x.id); setForm({ name: x.name, classLabel: x.classLabel, subject: x.subject, minutes: x.minutes, questions: x.questions, date: x.date ?? day(2), time: x.time ?? '09:30' }); setOpen(true); };
-  const inClass = (label: string) => everyone.filter((s) => label.split(', ').includes(s.classLabel));
-  // A teacher sets tests only in the subjects they teach, so the test stays in their own list.
-  const formSubjects = [...new Set(form.classLabel.split(', ').flatMap((l) => classes.data?.find((c) => c.label === l)?.subjects ?? []))].filter((x) => session.user.role !== 'teacher' || (session.user.subjects ?? []).includes(x));
-  const gradeOfLabel = (l: string) => Number(l.split('-')[0]);
+  const blank = { name: '', classId: '', subject: '', minutes: 20, questions: 15, date: '', time: '10:00' };
+  const [form, setForm] = useState(blank);
+  const tests = list.data ?? [];
   const grades = [...new Set((classes.data ?? []).map((c) => c.grade))].sort((a, b) => b - a);
-  const myLabels = (classes.data ?? []).map((c) => c.label);
-  const mineOnly = (x: OnlineTest) => session.user.role !== 'teacher' || (x.classLabel.split(', ').some((l) => myLabels.includes(l)) && (session.user.subjects ?? []).includes(x.subject));
-  const shown = tests.filter(mineOnly).filter((x) => { const labels = x.classLabel.split(', '); return (std === 'all' || labels.some((l) => String(gradeOfLabel(l)) === std)) && (cls === 'all' || labels.includes(cls)); });
+  const shown = tests.filter((x) => { const cs = (classes.data ?? []).filter((c) => x.classIds.includes(c.id)); return (std === 'all' || cs.some((c) => String(c.grade) === std)) && (cls === 'all' || x.classIds.includes(cls)); });
   const t = shown.find((x) => x.id === sel) ?? shown[0];
-  const roster = t ? inClass(t.classLabel) : [];
+  const detail = useLoad(() => (t ? api.getOnlineTest(t.id) : Promise.resolve(null)), [t?.id]);
+  const formClass = (classes.data ?? []).find((c) => c.id === form.classId);
+  const formSubjects = (formClass?.subjects ?? []).filter((x) => !teacher || (session.user.subjects ?? []).includes(x));
+
+  const startNew = () => { const c = classes.data?.[0]; setReopen(null); setEditId(null); setForm({ ...blank, classId: c?.id ?? '', subject: c?.subjects.find((x) => (session.user.subjects ?? []).includes(x)) ?? '' }); setOpen(true); };
+  const startEdit = (x: OnlineRow) => { setReopen(null); setEditId(x.id); setForm({ name: x.name, classId: x.classIds[0], subject: x.subject, minutes: x.minutes, questions: x.questions, date: x.opensAt.slice(0, 10), time: x.opensAt.slice(11, 16) }); setOpen(true); };
+  const startReopen = (x: OnlineRow, mode: 'missed' | 'all' = x.submitted < x.of ? 'missed' : 'all') => { setEditId(null); setReopen(x); setWho(mode); setForm({ name: `${x.name} (${mode === 'all' ? 'retest' : 'for those who missed it'})`, classId: x.classIds[0], subject: x.subject, minutes: x.minutes, questions: x.questions, date: day(1), time: '15:30' }); setOpen(true); };
+  const extend = (x: OnlineRow) => void run(() => api.extendOnlineTest(x.id, 10), `${x.name} now runs ${x.minutes + 10} minutes. Students still writing see the new end time.`);
+  const closeNow = async (x: OnlineRow) => { if (await confirm({ title: `Close ${x.name} now?`, body: `${x.of - x.submitted} students have not submitted. What they have answered so far is marked if they submit in the next minute.`, confirm: 'Close now' })) await run(() => api.closeOnlineTest(x.id), `${x.name} closed. Results are ready.`); };
+  const cancel = async (x: OnlineRow) => { if (await confirm({ title: `Cancel ${x.name}?`, body: 'The test is removed before it opens.', confirm: 'Cancel test', danger: true })) { await run(() => api.deleteOnlineTest(x.id), `${x.name} cancelled.`); setSel(null); } };
+  const submit = async () => {
+    if (!form.date || !form.time || !form.name.trim()) return;
+    const input = { name: form.name.trim(), classIds: reopen ? reopen.classIds : [form.classId], subject: reopen ? reopen.subject : formSubjects.includes(form.subject) ? form.subject : formSubjects[0] ?? form.subject, minutes: form.minutes, questions: form.questions, opensAt: `${form.date}T${form.time}` };
+    const when = opensLabel(input.opensAt);
+    const r = editId ? await run(() => api.updateOnlineTest(editId, input), `${input.name} updated: opens ${when}.`)
+      : await run(() => api.createOnlineTest({ ...input, reopen: reopen ? { testId: reopen.id, who } : undefined }), (x) => reopen ? (who === 'missed' ? `Reopened for the ${x.of} students who missed it: opens ${when}.` : `Retest for all ${x.of} students: opens ${when}. Earlier scores stay with the first test.`) : `${x.name} scheduled for ${when}, with ${x.questions} questions. Students of ${x.classLabel} see it in Online tests.`);
+    if (r) { setSel(r.id); setOpen(false); setReopen(null); }
+  };
+  if (!list.data || !classes.data) return <Loading />;
+  const d = detail.data && t && detail.data.test.id === t.id ? detail.data : null;
+  const thisMonth = isoDate(new Date()).slice(0, 7);
+  const avgs = tests.map((x) => x.avg).filter((x): x is number => x !== null);
 
   return (
     <>
-      <PageHead eyebrow="Online tests" title="Timed tests, marked instantly" lede={viewOnly ? 'Every online test teachers have set, by standard and class, with how each class did.' : 'Students take MCQ and short-answer tests on any phone. Marks, answer-wise feedback and item analysis appear the moment they submit.'}>
-        {!viewOnly && <button className="btn" onClick={startNew}><Icon name="plus" size={18} />New online test</button>}
+      <PageHead eyebrow="Online tests" title="Timed tests, marked instantly" lede={!teacher ? 'Every online test teachers have set, by standard and class, with how each class did.' : 'Students take MCQ tests on any phone. Marks, answer-wise feedback and item analysis appear the moment they submit.'}>
+        {teacher && <button className="btn" onClick={startNew}><Icon name="plus" size={18} />New online test</button>}
       </PageHead>
-      <Stats items={[{ label: 'Live now', value: tests.filter((x) => statusOf(x) === 'Live').length }, { label: 'Tests this month', value: 18 + tests.length - ONLINE.length }, { label: 'Average score', value: <>63<small>%</small></> }, { label: 'Teacher marking time', value: '0 min', foot: 'Every answer marked automatically' }]} />
+      <Stats items={[{ label: 'Live now', value: tests.filter((x) => x.status === 'live').length }, { label: 'Tests this month', value: tests.filter((x) => x.opensAt.startsWith(thisMonth)).length }, { label: 'Average score', value: avgs.length ? <>{Math.round(avgs.reduce((a, b) => a + b, 0) / avgs.length)}<small>%</small></> : '–' }, { label: 'Teacher marking time', value: '0 min', foot: 'Every answer marked automatically' }]} />
       <div className="split" style={{ alignItems: 'start' }}>
         <div className="card stack" style={{ gap: 10 }}>
           <div className="row">
             <label className="sr" htmlFor="ot-g">Standard</label><select id="ot-g" className="input" style={{ width: 'auto' }} value={std} onChange={(e) => { setStd(e.target.value); setCls('all'); }}><option value="all">All standards</option>{grades.map((g) => <option key={g} value={g}>Standard {g}</option>)}</select>
-            <label className="sr" htmlFor="ot-c">Class</label><select id="ot-c" className="input" style={{ width: 'auto' }} value={cls} onChange={(e) => setCls(e.target.value)}><option value="all">All classes</option>{(classes.data ?? []).filter((c) => std === 'all' || String(c.grade) === std).map((c) => <option key={c.id}>{c.label}</option>)}</select>
+            <label className="sr" htmlFor="ot-c">Class</label><select id="ot-c" className="input" style={{ width: 'auto' }} value={cls} onChange={(e) => setCls(e.target.value)}><option value="all">All classes</option>{classes.data.filter((c) => std === 'all' || String(c.grade) === std).map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}</select>
           </div>
-          <Table head={['Test', 'Class', 'When', 'Status', 'Submitted', 'Average', ...(viewOnly ? [] : [''])]} empty="No online tests for this standard or class." rows={shown.map((x) => [
-            <button key="n" className="btn sm quiet" onClick={() => setSel(x.id)} aria-pressed={x.id === sel} style={{ whiteSpace: 'normal', height: 'auto', padding: '6px 12px', textAlign: 'left' }}>{x.name}</button>,
-            `${x.classLabel} · ${x.subject}`, <span key="w" className="small">{x.when}</span>,
-            <span key="s" className={`pill ${statusOf(x) === 'Live' ? 'accent' : statusOf(x) === 'Closed' ? 'ok' : ''}`}>{statusOf(x) === 'Live' && <span className="dot" />}{statusOf(x)}</span>,
+          <Table head={['Test', 'Class', 'Opens', 'Status', 'Submitted', 'Average', ...(teacher ? [''] : [])]} empty={teacher ? 'No online tests yet. Use New online test to set one.' : 'No online tests for this standard or class.'} rows={shown.map((x) => [
+            <button key="n" className="btn sm quiet" onClick={() => setSel(x.id)} aria-pressed={x.id === t?.id} style={{ whiteSpace: 'normal', height: 'auto', padding: '6px 12px', textAlign: 'left' }}>{x.name}</button>,
+            `${x.classLabel} · ${x.subject}`, <span key="w" className="small">{opensLabel(x.opensAt)}</span>, <StatusPill key="s" status={x.status} />,
             <span key="c" className="num">{x.submitted}/{x.of}</span>, x.avg === null ? '–' : <b key="a" className="num">{x.avg}%</b>,
-            ...(viewOnly ? [] : [statusOf(x) === 'Scheduled' ? <button key="e" className="btn sm ghost" aria-label={`Edit ${x.name}`} onClick={() => startEdit(x)}>Edit</button>
-              : statusOf(x) === 'Live' ? <button key="e" className="btn sm ghost" aria-label={`Add 10 minutes to ${x.name}`} onClick={() => extend(x)}>+10 min</button>
-              : <button key="e" className="btn sm ghost" aria-label={`Reopen ${x.name}`} onClick={() => startReopen(x)}>Reopen</button>]),
+            ...(teacher ? [x.status === 'scheduled' ? <button key="e" className="btn sm ghost" aria-label={`Edit ${x.name}`} onClick={() => startEdit(x)}>Edit</button>
+              : x.status === 'live' ? <button key="e" className="btn sm ghost" disabled={busy} aria-label={`Add 10 minutes to ${x.name}`} onClick={() => extend(x)}>+10 min</button>
+              : <button key="e" className="btn sm ghost" aria-label={`Reopen ${x.name}`} onClick={() => startReopen(x)}>Reopen</button>] : []),
           ])} />
         </div>
         {t && <div className="card stack" style={{ gap: 12 }}>
-          <div className="card-head" style={{ margin: 0 }}><h2>{t.name}</h2><span className="dim small">{t.questions} questions · {t.minutes} min</span></div>
-          {!viewOnly && statusOf(t) === 'Live' && <div className="row"><span className="pill accent"><span className="dot" />{t.submitted} of {t.of} submitted</span><button className="btn sm ghost" onClick={() => extend(t)}>Add 10 minutes</button><button className="btn sm ghost" onClick={() => void closeNow(t)}>Close now</button></div>}
-          {!viewOnly && statusOf(t) === 'Closed' && <div className="row"><span className="small">{t.submitted < t.of ? `${t.of - t.submitted} students missed it.` : 'Everyone wrote it.'}</span>{t.submitted < t.of && <button className="btn sm ghost" onClick={() => startReopen(t, 'missed')}>Reopen for those who missed it</button>}<button className="btn sm ghost" onClick={() => startReopen(t, 'all')}>Retest the whole class</button></div>}
-          {statusOf(t) === 'Scheduled' ? <div className="empty stack" style={{ alignItems: 'center' }}><span>Opens {t.when}. Students and parents get a WhatsApp reminder the evening before.</span>{!viewOnly && <><button className="btn sm ghost" onClick={async () => { if (await confirm({ title: `Cancel ${t.name}?`, body: 'The test is removed before it opens. No one is notified, because no reminder has gone out yet.', confirm: 'Cancel test', danger: true })) { setTests(tests.filter((x) => x.id !== t.id)); setSel(tests.find((x) => x.id !== t.id)?.id ?? ''); toast(`${t.name} cancelled.`); } }}>Cancel this test</button><button className="btn sm ghost" onClick={() => startEdit(t)}>Edit</button></>}</div> : (
+          <div className="card-head" style={{ margin: 0 }}><h2>{t.name}</h2><span className="dim small">{t.questions} questions · {t.minutes} min{t.reopenedFor ? ` · reopened for ${t.reopenedFor}` : ''}</span></div>
+          {teacher && t.status === 'live' && <div className="row"><span className="pill accent"><span className="dot" />{t.submitted} of {t.of} submitted</span><button className="btn sm ghost" disabled={busy} onClick={() => extend(t)}>Add 10 minutes</button><button className="btn sm ghost" disabled={busy} onClick={() => void closeNow(t)}>Close now</button></div>}
+          {teacher && t.status === 'closed' && <div className="row"><span className="small">{t.submitted < t.of ? `${t.of - t.submitted} students missed it.` : 'Everyone wrote it.'}</span>{t.submitted < t.of && <button className="btn sm ghost" onClick={() => startReopen(t, 'missed')}>Reopen for those who missed it</button>}<button className="btn sm ghost" onClick={() => startReopen(t, 'all')}>Retest the whole class</button></div>}
+          {t.status === 'scheduled' ? <div className="empty stack" style={{ alignItems: 'center' }}><span>Opens {opensLabel(t.opensAt)} for {t.classLabel}. Students see it in their Online tests now and can start it when it opens.</span>{teacher && <div className="row"><button className="btn sm ghost" disabled={busy} onClick={() => void cancel(t)}>Cancel this test</button><button className="btn sm ghost" onClick={() => startEdit(t)}>Edit</button></div>}</div>
+            : !d ? <Loading /> : (
             <>
               <span className="eyebrow">Item analysis · share who got it right</span>
-              <div className="stack" style={{ gap: 8 }}>{ITEM.slice(0, 8).map((p, i) => <Bar key={i} value={Math.max(10, p - (t.id === 'ot3' ? 9 : 0))} label={`Q${i + 1}`} sub={i === 7 ? 'most chose (b): common misconception' : undefined} />)}</div>
+              {t.submitted === 0 ? <p className="dim small">No one has submitted yet.</p> : <div className="stack" style={{ gap: 8 }}>{d.questions.map((q, i) => <Bar key={i} value={q.right ?? 0} label={`Q${i + 1}`} sub={q.right !== null && q.right < 50 ? `most chose (${String.fromCharCode(97 + q.picks.indexOf(Math.max(...q.picks)))}): ${q.q}` : undefined} />)}</div>}
               <span className="eyebrow" style={{ marginTop: 6 }}>Students</span>
-              <div className="list">{roster.slice(0, t.submitted).slice(0, 8).map((s, i) => { const sc = Math.max(4, Math.min(t.questions, Math.round(((s.average ?? 60) / 100) * t.questions + ((i % 3) - 1)))); return <div key={s.id} className="row between"><span>{s.name}</span><b className="num">{sc}/{t.questions}</b></div>; })}</div>
+              <div className="list">{d.results.map((s) => <div key={s.studentId} className="row between"><span>{s.name}{t.classIds.length > 1 ? <span className="dim small"> · {s.classLabel}</span> : null}</span>{s.score === null ? <span className="dim small">{t.status === 'live' ? 'Writing or not started' : 'Missed'}</span> : <b className="num">{s.score}/{s.of}</b>}</div>)}</div>
             </>
           )}
         </div>}
       </div>
       {confirmEl}
       <Modal open={open} onClose={() => setOpen(false)} title={reopen ? 'Reopen test' : editId ? 'Edit online test' : 'New online test'}>
-        <form className="stack" style={{ gap: 12 }} onSubmit={(e) => { e.preventDefault(); if (!form.date || !form.time || !form.name.trim()) return; const when = `${formatDate(form.date)}, ${new Date(`2000-01-01T${form.time}`).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })}`; const id = editId ?? `ot${Date.now()}`; const row: OnlineTest = { id, name: form.name.trim(), classLabel: form.classLabel, subject: formSubjects.includes(form.subject) ? form.subject : formSubjects[0] ?? form.subject, questions: form.questions, minutes: form.minutes, when, date: form.date, time: form.time, status: 'Scheduled', submitted: 0, of: reopen && who === 'missed' ? reopen.of - reopen.submitted : inClass(form.classLabel).length, avg: null }; setTests(editId ? tests.map((x) => (x.id === editId ? row : x)) : [row, ...tests]); setSel(id); setOpen(false); setReopen(null); toast(reopen ? (who === 'missed' ? `Reopened for the ${row.of} students who missed it: opens ${when}. Only they get the reminder.` : `Retest for all ${row.of} students: opens ${when}. Earlier scores stay in the first test; the new scores are kept separately.`) : editId ? `${row.name} updated: opens ${when}.` : `${form.name} scheduled for ${when}. You can change or cancel it until it opens.`); }}>
+        <form className="stack" style={{ gap: 12 }} onSubmit={(e) => { e.preventDefault(); void submit(); }}>
           {reopen && <div className="field"><span className="label">Who writes it</span><div className="grid cols-2" style={{ gap: 8 }}>
             <button type="button" className="opt" aria-pressed={who === 'missed'} disabled={reopen.submitted >= reopen.of} onClick={() => { setWho('missed'); setForm({ ...form, name: `${reopen.name} (for those who missed it)` }); }}>Only those who missed it ({reopen.of - reopen.submitted})</button>
             <button type="button" className="opt" aria-pressed={who === 'all'} onClick={() => { setWho('all'); setForm({ ...form, name: `${reopen.name} (retest)` }); }}>The whole class ({reopen.of})</button>
           </div></div>}
-          <div className="field"><label htmlFor="ot-n">Name</label><input id="ot-n" className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
+          <div className="field"><label htmlFor="ot-n">Name</label><input id="ot-n" className="input" placeholder="e.g. Trigonometry quick check" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
           <div className="grid cols-2" style={{ gap: 12 }}>
-            <div className="field"><span className="label">Class</span><select aria-label="Class" className="input" value={form.classLabel} onChange={(e) => setForm({ ...form, classLabel: e.target.value })}>{[...new Set([...(classes.data ?? []).map((c) => c.label), form.classLabel])].map((c) => <option key={c}>{c}</option>)}</select></div>
-            <div className="field"><span className="label">Subject</span><select aria-label="Subject" className="input" value={formSubjects.includes(form.subject) ? form.subject : formSubjects[0]} onChange={(e) => setForm({ ...form, subject: e.target.value })}>{formSubjects.map((x) => <option key={x}>{x}</option>)}</select></div>
-            <div className="field"><label htmlFor="ot-q">Questions</label><input id="ot-q" type="number" min={5} max={50} className="input" value={form.questions} onChange={(e) => setForm({ ...form, questions: Number(e.target.value) })} /></div>
+            <div className="field"><span className="label">Class</span><select aria-label="Class" className="input" disabled={!!reopen} value={form.classId} onChange={(e) => { const c = classes.data!.find((x) => x.id === e.target.value); setForm({ ...form, classId: e.target.value, subject: c?.subjects.find((x) => !teacher || (session.user.subjects ?? []).includes(x)) ?? '' }); }}>{classes.data.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}</select></div>
+            <div className="field"><span className="label">Subject</span><select aria-label="Subject" className="input" disabled={!!reopen} value={formSubjects.includes(form.subject) ? form.subject : formSubjects[0]} onChange={(e) => setForm({ ...form, subject: e.target.value })}>{formSubjects.map((x) => <option key={x}>{x}</option>)}</select></div>
+            <div className="field"><label htmlFor="ot-q">Questions</label><input id="ot-q" type="number" min={1} max={50} className="input" value={form.questions} onChange={(e) => setForm({ ...form, questions: Number(e.target.value) })} /></div>
             <div className="field"><label htmlFor="ot-m">Minutes</label><input id="ot-m" type="number" min={5} max={180} className="input" value={form.minutes} onChange={(e) => setForm({ ...form, minutes: Number(e.target.value) })} /></div>
           </div>
           <div className="grid cols-2" style={{ gap: 12 }}>
             <div className="field"><label htmlFor="ot-d">Opens on</label><input id="ot-d" type="date" className="input" required min={day(0)} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></div>
             <div className="field"><label htmlFor="ot-t">At</label><input id="ot-t" type="time" className="input" required value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} /></div>
           </div>
-          <p className="dim small">Questions are drawn from the bank for the chapter in the name, with shuffled order and options for each student. Students and parents get a reminder the evening before.</p>
-          {editId && <p className="dim small">You can change anything until the test opens. If you change the date or time, students and parents get the new time.</p>}
-          <button className="btn" disabled={!form.date || !form.time || !form.name.trim()}>{reopen ? 'Reopen test' : editId ? 'Save changes' : 'Schedule test'}</button>
+          {!formSubjects.length && <p className="small" style={{ color: 'var(--bad)' }}>You don’t teach a subject in this class. Pick another class.</p>}
+          <p className="dim small">Questions come from the question bank for the chapter in the name (for example Trigonometry, Mensuration, Algebra, Optics). The test runs for the minutes you set from its opening time, then closes.</p>
+          {editId && <p className="dim small">You can change anything until the test opens.</p>}
+          <button className="btn" disabled={busy || !form.date || !form.time || !form.name.trim() || !formSubjects.length}>{reopen ? 'Reopen test' : editId ? 'Save changes' : 'Schedule test'}</button>
         </form>
       </Modal>
     </>

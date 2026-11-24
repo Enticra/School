@@ -1,11 +1,12 @@
 // Sample data for the pilot demo. All people, schools and numbers here are
 // fictional and shown in the app with a "Sample data" label.
 import type {
-  AnswerScript, ArchivedReport, AttendanceMark, AttendanceRecord, ClassRoom, Db, Exam, ExamHall, ExamPlan, Homework, HomeworkSubmission, MarkSheet, OutboundMessage,
+  AnswerScript, ArchivedReport, AttendanceMark, AttendanceRecord, ClassRoom, Db, Exam, ExamHall, ExamPlan, Homework, HomeworkSubmission, MarkSheet, OnlineAttempt, OnlineTest, OutboundMessage,
   Question, School, SchoolSettings, StaffAttendance, StaffLeave, Student, User,
 } from './types';
-import { academicYear, addDays, examTimingFor, isoDate, lastSchoolDays, localDates, prng, round1 } from './util';
+import { academicYear, addDays, examTimingFor, hhmm, isoDate, lastSchoolDays, localDates, prng, round1 } from './util';
 import { render } from './templates';
+import { pickQuestions } from './questions';
 import { allocateSeats, groupSittings } from './seating';
 
 export const SEED_VERSION = 11;
@@ -538,6 +539,26 @@ export function createSeed(now: Date = new Date()): Db {
     { id: 'lv_4', schoolId: s1.id, userId: 'u_s1_maths', kind: 'Earned', from: isoDate(addDays(now, 12)), days: 3, reason: 'Sister’s wedding.', status: 'Pending', createdAt: stamp(isoDate(addDays(now, -2)), '18:30') },
     { id: 'lv_5', schoolId: s1.id, userId: 'u_s1_soc2', kind: 'Casual', from: isoDate(addDays(now, -3)), days: 1, reason: 'Bank work.', status: 'Declined', reply: 'Unit test that day. Please take Saturday afternoon.', decidedBy: 'u_s1_principal', createdAt: stamp(isoDate(addDays(now, -5)), '09:40') },
   ];
+  // Online tests: one live now, two closed with scores, one scheduled.
+  const at = (offsetDays: number, time?: string) => { const d = addDays(now, offsetDays); return `${isoDate(d)}T${time ?? hhmm(d)}`; };
+  const liveFrom = new Date(now.getTime() - 10 * 60_000);
+  const onlineTests: OnlineTest[] = [
+    { id: 'ot_s1_trig', schoolId: s1.id, classIds: ['cls_s1_10a'], subject: 'Maths', name: 'Trigonometry quick check', opensAt: `${isoDate(liveFrom)}T${hhmm(liveFrom)}`, minutes: 40, questions: pickQuestions('Trigonometry', 'Maths', 5), createdBy: 'u_s1_maths', createdAt: stamp(isoDate(addDays(now, -1)), '16:00') },
+    { id: 'ot_s1_optics', schoolId: s1.id, classIds: ['cls_s1_10a'], subject: 'Science', name: 'Optics MCQ practice', opensAt: at(-2, '14:00'), minutes: 25, questions: pickQuestions('Optics', 'Science', 5), createdBy: 'u_s1_science', createdAt: stamp(isoDate(addDays(now, -3)), '15:00') },
+    { id: 'ot_s1_algebra', schoolId: s1.id, classIds: ['cls_s1_10b'], subject: 'Maths', name: 'Algebra: quadratic equations', opensAt: at(-5, '11:30'), minutes: 20, questions: pickQuestions('Algebra', 'Maths', 5), createdBy: 'u_s1_maths', createdAt: stamp(isoDate(addDays(now, -6)), '15:00') },
+    { id: 'ot_s1_sslc', schoolId: s1.id, classIds: ['cls_s1_10a', 'cls_s1_10b'], subject: 'Maths', name: 'SSLC 2025 Part I (MCQ)', opensAt: at(2, '09:30'), minutes: 15, questions: pickQuestions('SSLC', 'Maths', 14), createdBy: 'u_s1_maths', createdAt: stamp(today, '08:00') },
+  ];
+  const rndOnline = prng(57);
+  const onlineAttempts: OnlineAttempt[] = [];
+  for (const t of onlineTests.filter((x) => x.id !== 'ot_s1_sslc')) {
+    const wrote = students.filter((x) => t.classIds.includes(x.classId) && (t.id !== 'ot_s1_trig' ? x.rollNo !== 3 : x.rollNo > 1 && x.rollNo <= 8));
+    for (const st of wrote) {
+      const answers = t.questions.map((q) => (rndOnline() < 0.68 ? q.answer : Math.floor(rndOnline() * q.options.length)));
+      const minsIn = 4 + Math.floor(rndOnline() * Math.max(1, t.minutes - 6));
+      const d = new Date(new Date(t.opensAt).getTime() + minsIn * 60_000);
+      onlineAttempts.push({ id: `oa_${t.id}_${st.id}`, schoolId: t.schoolId, testId: t.id, studentId: st.id, answers, score: answers.filter((a, i) => a === t.questions[i].answer).length, of: t.questions.length, submittedAt: d.toISOString() });
+    }
+  }
   const rndStaff = prng(91);
   const staffAttendance: StaffAttendance[] = lastSchoolDays(addDays(now, -1), 20).map((d) => ({
     id: `sat_${d}`, schoolId: s1.id, date: d, markedBy: 'u_s1_principal', at: stamp(d, '09:20'),
@@ -577,7 +598,7 @@ export function createSeed(now: Date = new Date()): Db {
   }
 
   return {
-    schools: [s1, s2], users, classes, students, attendance, reportArchive, homework, submissions, formerStudents: [], halls, examPlans, timetableEdits: [], staffAttendance, staffLeave, exams, marks, scripts, messages,
+    schools: [s1, s2], users, classes, students, attendance, reportArchive, homework, submissions, formerStudents: [], halls, examPlans, timetableEdits: [], staffAttendance, staffLeave, onlineTests, onlineAttempts, exams, marks, scripts, messages,
     audit: [{ id: 'aud_1', schoolId: s1.id, actorId: 'u_enticra', action: 'school.created', detail: `Pilot school set up and ${students.filter((x) => x.schoolId === s1.id).length} students imported from EMIS`, at: s1.createdAt }],
     meta: { seededAt: now.toISOString(), seedVersion: SEED_VERSION },
   };

@@ -566,3 +566,57 @@ describe('report card history, leaving school, analytics scope', () => {
     expect(all[0].testsInAll).toBe(all[0].tests.length);
   });
 });
+
+describe('online tests', () => {
+  const opensIn = (mins: number) => { const d = new Date(NOW.getTime() + mins * 60_000); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+  const at = (mins: number) => new Portal(db, { now: () => new Date(NOW.getTime() + mins * 60_000) });
+
+  it('a test a teacher schedules reaches the students of that class, and the principal sees their scores', () => {
+    const t = portal.createOnlineTest(u('u_s1_maths'), { name: 'Mensuration MCQ', classIds: ['cls_s1_10a'], subject: 'Maths', minutes: 20, questions: 4, opensAt: opensIn(30) });
+    expect(t.status).toBe('scheduled');
+    const student = u('u_s1_student');
+    expect(portal.listOnlineTests(student).find((x) => x.id === t.id)?.status).toBe('scheduled');
+    expectError(() => portal.submitOnlineTest(student, t.id, [1, 1, 0, 0]), 409);
+    // Another class does not see it.
+    const tenB = db.users.find((x) => x.role === 'student' && x.studentIds?.some((id) => id.startsWith('stu_cls_s1_10b')));
+    if (tenB) expect(at(35).listOnlineTests(tenB).some((x) => x.id === t.id)).toBe(false);
+
+    const later = at(35);
+    expect(later.listOnlineTests(student).find((x) => x.id === t.id)?.status).toBe('live');
+    expectError(() => later.getOnlineTest(student, t.id), 403);
+    const view = later.onlinePaper(student, t.id);
+    expect(view.questions).toHaveLength(4);
+    expect('answer' in view.questions[0]).toBe(false);
+    const res = later.submitOnlineTest(student, t.id, [1, 1, 0, 2]);
+    expect(res).toMatchObject({ score: 3, of: 4 });
+    expectError(() => later.submitOnlineTest(student, t.id, [1, 1, 0, 0]), 409);
+    expect(later.listOnlineTests(student).find((x) => x.id === t.id)?.mine).toMatchObject({ score: 3, of: 4 });
+
+    const row = later.listOnlineTests(u('u_s1_principal')).find((x) => x.id === t.id)!;
+    expect(row).toMatchObject({ submitted: 1, avg: 75, classLabel: '10-A' });
+    const detail = later.getOnlineTest(u('u_s1_principal'), t.id);
+    expect(detail.results.find((r) => r.studentId === 'stu_cls_s1_10a_1')?.score).toBe(3);
+  });
+
+  it('closes after its minutes, and only teachers of the subject can set or change it', () => {
+    expectError(() => portal.createOnlineTest(u('u_s1_maths'), { name: 'Optics', classIds: ['cls_s1_10a'], subject: 'Science', minutes: 20, questions: 4, opensAt: opensIn(0) }), 403);
+    expectError(() => portal.createOnlineTest(u('u_s1_maths'), { name: 'Trig', classIds: ['cls_s1_9a'], subject: 'Maths', minutes: 20, questions: 4, opensAt: opensIn(0) }), 403);
+    expectError(() => portal.createOnlineTest(u('u_s1_principal'), { name: 'Trig', classIds: ['cls_s1_10a'], subject: 'Maths', minutes: 20, questions: 4, opensAt: opensIn(0) }), 403);
+    const t = portal.createOnlineTest(u('u_s1_maths'), { name: 'Trig check', classIds: ['cls_s1_10a'], subject: 'Maths', minutes: 10, questions: 5, opensAt: opensIn(0) });
+    expectError(() => portal.closeOnlineTest(u('u_s1_science'), t.id), 403);
+    expect(at(5).listOnlineTests(u('u_s1_student')).find((x) => x.id === t.id)?.status).toBe('live');
+    expect(at(12).listOnlineTests(u('u_s1_student')).find((x) => x.id === t.id)?.status).toBe('closed');
+    expectError(() => at(12).submitOnlineTest(u('u_s1_student'), t.id, []), 409);
+    // Once closed, students can review the answers.
+    const review = at(12).onlinePaper(u('u_s1_student'), t.id);
+    expect('answer' in review.questions[0]).toBe(true);
+  });
+
+  it('can be reopened for only the students who missed it', () => {
+    const t = portal.createOnlineTest(u('u_s1_maths'), { name: 'Trig check', classIds: ['cls_s1_10a'], subject: 'Maths', minutes: 10, questions: 5, opensAt: opensIn(0) });
+    at(2).submitOnlineTest(u('u_s1_student'), t.id, [1, 1, 1, 0, 1]);
+    const r = at(20).createOnlineTest(u('u_s1_maths'), { name: 'Trig check (for those who missed it)', classIds: ['cls_s1_10a'], subject: 'Maths', minutes: 10, questions: 5, opensAt: opensIn(60), reopen: { testId: t.id, who: 'missed' } });
+    expect(r.of).toBe(db.students.filter((s) => s.classId === 'cls_s1_10a').length - 1);
+    expect(at(20).listOnlineTests(u('u_s1_student')).some((x) => x.id === r.id)).toBe(false);
+  });
+});

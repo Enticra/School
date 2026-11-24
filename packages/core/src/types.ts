@@ -265,6 +265,28 @@ export interface ArchivedReport {
 
 export interface FormerStudent { student: Student; leftOn: string; reason: string; by: string; accounts: User[] }
 
+export interface OnlineQuestion { q: string; options: string[]; answer: number; why: string; chapter: string }
+
+/** A timed MCQ test students take on their phones. Opens at `opensAt` (school local time) and runs `minutes`. */
+export interface OnlineTest {
+  id: string; schoolId: string; classIds: string[]; subject: string; name: string;
+  /** Local date and time, YYYY-MM-DDTHH:MM. */
+  opensAt: string;
+  minutes: number;
+  questions: OnlineQuestion[];
+  /** Set when the teacher closes it early. */
+  closedAt?: string;
+  /** A reopened test for only the students who missed the first one. */
+  onlyStudentIds?: string[];
+  retestOf?: string;
+  createdBy: string; createdAt: string;
+}
+
+export interface OnlineAttempt {
+  id: string; schoolId: string; testId: string; studentId: string;
+  answers: (number | null)[]; score: number; of: number; submittedAt: string;
+}
+
 export interface Db {
   schools: School[];
   users: User[];
@@ -281,6 +303,8 @@ export interface Db {
   timetableEdits: TimetableEdit[];
   staffAttendance: StaffAttendance[];
   staffLeave: StaffLeave[];
+  onlineTests: OnlineTest[];
+  onlineAttempts: OnlineAttempt[];
   exams: Exam[];
   marks: MarkSheet[];
   scripts: AnswerScript[];

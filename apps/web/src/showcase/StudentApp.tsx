@@ -1,32 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { formatDate, isoDate } from '@enticra/core';
-import { Bar, Icon, Loading, PageHead, readImage, useApp, useConfirm, useLoad } from '../ui';
+import { MENSURATION, TRIG, formatDate, isoDate, type OnlineQuestion } from '@enticra/core';
+import { Bar, Icon, Loading, PageHead, readImage, useAction, useApp, useConfirm, useLoad } from '../ui';
 import { StudentProfile } from '../pages/Students';
 import { GuidanceReport } from './People';
-import { MATHS_CHAPTERS, ONLINE, statusOf, type OnlineTest } from './Academics';
+import { MATHS_CHAPTERS, StatusPill, opensLabel } from './Academics';
 import { Stats, Table, Tabs, dayLabel, useDemo } from './kit';
 import { StudentHomework, TodayPeriods } from './School';
 
-type MCQ = { q: string; options: string[]; answer: number; why: string; chapter: string };
-const TRIG: MCQ[] = [
-  { q: 'sin²θ + cos²θ equals', options: ['0', '1', 'tan θ', '2'], answer: 1, why: 'This is the basic Pythagorean identity.', chapter: 'Trigonometry' },
-  { q: 'If tan θ = 1, then θ is', options: ['30°', '45°', '60°', '90°'], answer: 1, why: 'tan 45° = 1, because sin 45° = cos 45°.', chapter: 'Trigonometry' },
-  { q: 'The angle of elevation of the sun is 45°. A 10 m pole casts a shadow of', options: ['5 m', '10 m', '10√3 m', '20 m'], answer: 1, why: 'tan 45° = height ÷ shadow = 1, so the shadow equals the height.', chapter: 'Trigonometry' },
-  { q: '(1 + tan²θ) equals', options: ['sec²θ', 'cosec²θ', 'cot²θ', '1'], answer: 0, why: 'Divide sin²θ + cos²θ = 1 by cos²θ.', chapter: 'Trigonometry' },
-  { q: 'cos 60° is', options: ['√3/2', '1/2', '1', '0'], answer: 1, why: 'cos 60° = 1/2. Learn the 0°, 30°, 45°, 60°, 90° table.', chapter: 'Trigonometry' },
-];
-const SCIENCE: MCQ[] = [
-  { q: 'The SI unit of electric current is', options: ['Volt', 'Ohm', 'Ampere', 'Watt'], answer: 2, why: 'Current is measured in amperes (A).', chapter: 'Electricity' },
-  { q: 'Ohm’s law is', options: ['V = IR', 'P = VI', 'V = I/R', 'R = VI'], answer: 0, why: 'At constant temperature, voltage = current × resistance.', chapter: 'Electricity' },
-  { q: 'A concave lens always forms an image that is', options: ['Real and inverted', 'Virtual and diminished', 'Real and enlarged', 'Virtual and enlarged'], answer: 1, why: 'A concave lens diverges light, so the image is virtual, erect and smaller.', chapter: 'Optics' },
-  { q: 'The power of a lens of focal length 0.5 m is', options: ['0.5 D', '1 D', '2 D', '5 D'], answer: 2, why: 'P = 1/f = 1/0.5 = 2 dioptres.', chapter: 'Optics' },
-];
-const MENSURATION: MCQ[] = [
-  { q: 'Curved surface area of a cylinder is', options: ['πr²h', '2πrh', '2πr(h + r)', '⅓πr²h'], answer: 1, why: 'CSA = 2πrh. Total adds the two circles: 2πr(h + r).', chapter: 'Mensuration' },
-  { q: 'Volume of a cone is', options: ['πr²h', '⅓πr²h', '4/3 πr³', '2πrh'], answer: 1, why: 'A cone holds one third of the cylinder with the same base and height.', chapter: 'Mensuration' },
-  { q: 'A sphere of radius 3 cm has volume', options: ['36π cm³', '27π cm³', '12π cm³', '9π cm³'], answer: 0, why: '4/3 × π × 27 = 36π cm³.', chapter: 'Mensuration' },
-  { q: 'Slant height of a cone with r = 6, h = 8 is', options: ['10', '12', '14', '7'], answer: 0, why: 'l = √(r² + h²) = √100 = 10.', chapter: 'Mensuration' },
-];
+type MCQ = OnlineQuestion;
 
 export function TakeTest({ title, questions, minutes, onDone }: { title: string; questions: MCQ[]; minutes: number; onDone?: (score: number) => void }) {
   const [ans, setAns] = useState<(number | null)[]>(() => questions.map(() => null));
@@ -65,8 +46,8 @@ export function TakeTest({ title, questions, minutes, onDone }: { title: string;
 export function StudentHome() {
   const { api, session, go, toast } = useApp();
   const me = session.children[0];
-  const { mine } = useMyTests();
-  const live = mine.find((x) => statusOf(x) === 'Live');
+  const online = useLoad(() => api.listOnlineTests(), []);
+  const live = (online.data ?? []).find((x) => x.status === 'live' && !x.mine);
   const hw = useLoad(() => api.listHomework({ classId: me.classId }), []);
   const prof = useLoad(() => api.getStudent(me.id), []);
   const today = isoDate(new Date());
@@ -93,61 +74,87 @@ export function StudentHome() {
   );
 }
 
-/** Questions for a teacher-set online test, from the bank that matches its name or subject. */
-function questionsFor(t: OnlineTest): MCQ[] {
-  const n = t.name.toLowerCase();
-  const pool = /trig/.test(n) ? TRIG : /mensur|cone|cylinder|sphere/.test(n) ? MENSURATION : /optic|lens|electric|current|light/.test(n) ? SCIENCE
-    : t.subject === 'Maths' ? [...TRIG, ...MENSURATION] : ['Science', 'Physics'].includes(t.subject) ? SCIENCE : [...TRIG, ...MENSURATION, ...SCIENCE];
-  return pool.slice(0, Math.max(1, Math.min(t.questions, pool.length)));
-}
-
-/** The online tests teachers have set for this student's class, as the teacher and principal see them. */
-function useMyTests() {
-  const { api, session } = useApp();
-  const me = session.children[0];
-  const prof = useLoad(() => api.getStudent(me.id), []);
-  const [tests, setTests] = useDemo<OnlineTest[]>('online-tests', ONLINE);
-  const mine = prof.data ? tests.filter((x) => x.classLabel.split(', ').includes(prof.data!.classLabel)) : [];
-  return { me, ready: !!prof.data, tests, setTests, mine };
+/** A student writes a teacher's online test. Answers are marked on the server, which then shows the right ones. */
+function TakeOnlineTest({ testId, onBack }: { testId: string; onBack: () => void }) {
+  const { api } = useApp();
+  const paper = useLoad(() => api.onlinePaper(testId), [testId]);
+  const { run, busy } = useAction();
+  const [ans, setAns] = useState<(number | null)[] | null>(null);
+  const [result, setResult] = useState<{ score: number; of: number; answers: (number | null)[]; review: { answer: number; why: string }[] } | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [ask, confirmEl] = useConfirm();
+  const sent = useRef(false);
+  const p = paper.data;
+  const done = result ?? (p?.answers ? { score: p.test.mine?.score ?? 0, of: p.test.mine?.of ?? p.questions.length, answers: p.answers, review: p.questions.map((q) => ({ answer: q.answer ?? -1, why: q.why ?? '' })) } : null);
+  const closedUnwritten = !done && p?.test.status === 'closed';
+  const left = p ? Math.max(0, Math.floor((new Date(p.test.endsAt).getTime() - now) / 1000)) : 0;
+  const picks = ans ?? p?.questions.map(() => null) ?? [];
+  const send = async () => {
+    if (sent.current || !p) return;
+    sent.current = true;
+    const r = await run(() => api.submitOnlineTest(testId, picks), (x) => `Submitted. You scored ${x.score} out of ${x.of}.`);
+    if (r) setResult(r); else sent.current = false;
+  };
+  useEffect(() => { if (done || closedUnwritten) return; const t = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(t); }, [done, closedUnwritten]);
+  useEffect(() => { if (p && !done && !closedUnwritten && p.test.status === 'live' && left === 0) void send(); /* time is up */ }, [left]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!p) return <Loading />;
+  const blank = picks.filter((a) => a === null).length;
+  const submit = async () => {
+    if (!(await ask({ title: 'Submit your answers?', body: blank ? `${blank} question${blank > 1 ? 's are' : ' is'} not answered yet. You can’t change answers after submitting.` : 'You can’t change answers after submitting.', confirm: 'Submit' }))) return;
+    await send();
+  };
+  const shownAns = done ? done.answers : picks;
+  return (
+    <>
+      <PageHead eyebrow="Online tests" title={p.test.name} lede={`${p.test.subject} · ${p.questions.length} questions · ${p.test.minutes} min · ${p.test.teacher}`}>
+        <button className="btn ghost" onClick={onBack}>Back to tests</button>
+      </PageHead>
+      {confirmEl}
+      <div className="card stack" style={{ gap: 16 }}>
+        <div className="row between"><h2>{p.test.name}</h2>{done ? <span className="pill ok" style={{ fontSize: '.95rem' }}>{done.score} / {done.of}</span> : closedUnwritten ? <span className="pill">Closed</span> : <span className={`pill ${left < 60 ? 'bad' : 'accent'}`}><Icon name="clock" size={14} />{Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')}</span>}</div>
+        {closedUnwritten && <p className="muted small">This test closed before you submitted it. The answers are below so you can learn from them.</p>}
+        {p.questions.map((q, i) => {
+          const right = done ? done.review[i]?.answer : q.answer;
+          const why = done ? done.review[i]?.why : q.why;
+          const reveal = right !== undefined && right >= 0;
+          return (
+            <div key={i} className="stack" style={{ gap: 8 }}>
+              <b>{i + 1}. {q.q}</b>
+              <div className="grid cols-2" style={{ gap: 8 }}>
+                {q.options.map((o, j) => {
+                  const cls = reveal ? (j === right ? 'right' : shownAns[i] === j ? 'wrong' : '') : '';
+                  return <button key={j} className={`opt ${cls}`} aria-pressed={shownAns[i] === j} disabled={!!done || closedUnwritten || busy} onClick={() => setAns(picks.map((a, k) => (k === i ? j : a)))}><span className="pill">{String.fromCharCode(97 + j)}</span>{o}</button>;
+                })}
+              </div>
+              {reveal && <p className="small" style={{ color: shownAns[i] === right ? 'var(--ok)' : 'var(--bad)' }}>{shownAns[i] === right ? '✓ Correct. ' : shownAns[i] === null || shownAns[i] === undefined ? 'Not answered. ' : '✗ Not quite. '}<span className="muted">{why}</span></p>}
+            </div>
+          );
+        })}
+        {!done && !closedUnwritten && <div className="row"><button className="btn" disabled={busy} onClick={() => void submit()}>Submit answers</button>{blank > 0 && <span className="dim small">{blank} not answered</span>}</div>}
+      </div>
+    </>
+  );
 }
 
 export function StudentTests() {
-  const { me, ready, tests, setTests, mine } = useMyTests();
-  const [scores, setScores] = useDemo<Record<string, { score: number; of: number }>>(`online-scores-${me.id}`, { ot2: { score: 14, of: 20 } });
-  const [taking, setTaking] = useState<OnlineTest | null>(null);
-  if (!ready) return <Loading />;
-  const order = { Live: 0, Scheduled: 1, Closed: 2 } as const;
-  const list = [...mine].sort((a, b) => order[statusOf(a)] - order[statusOf(b)]);
-  const finish = (t: OnlineTest, q: number) => (score: number) => {
-    if (scores[t.id] !== undefined) return;
-    setScores((s) => ({ ...s, [t.id]: { score, of: q } }));
-    const pct = Math.round((score / q) * 100);
-    // The teacher's and principal's view of the test count this submission too.
-    setTests(tests.map((x) => (x.id === t.id ? { ...x, submitted: x.of ? Math.min(x.of, x.submitted + 1) : x.submitted + 1, avg: Math.round(((x.avg ?? 0) * x.submitted + pct) / (x.submitted + 1)) } : x)));
-  };
-  if (taking) {
-    const qs = questionsFor(taking);
-    return (
-      <>
-        <PageHead eyebrow="Online tests" title={taking.name} lede={`${taking.subject} · ${qs.length} questions · ${taking.minutes} min`}>
-          <button className="btn ghost" onClick={() => setTaking(null)}>Back to tests</button>
-        </PageHead>
-        <TakeTest title={taking.name} questions={qs} minutes={taking.minutes} onDone={finish(taking, qs.length)} />
-      </>
-    );
-  }
+  const { api } = useApp();
+  const list = useLoad(() => api.listOnlineTests(), []);
+  const [taking, setTaking] = useState<string | null>(null);
+  if (taking) return <TakeOnlineTest testId={taking} onBack={() => { setTaking(null); list.reload(); }} />;
+  if (!list.data) return <Loading />;
+  const order = { live: 0, scheduled: 1, closed: 2 } as const;
+  const rows = [...list.data].sort((a, b) => order[a.status] - order[b.status] || (a.status === 'scheduled' ? a.opensAt.localeCompare(b.opensAt) : b.opensAt.localeCompare(a.opensAt)));
   return (
     <>
       <PageHead eyebrow="Online tests" title="Tests" lede="Timed tests from your teachers. You see your marks and the reason for every answer as soon as you submit." />
       <div className="card">
-        <Table head={['Test', 'Subject', 'When', '']} empty="No online tests for your class yet." rows={list.map((x) => {
-          const st = statusOf(x); const sc = scores[x.id];
-          return [<b key="n">{x.name}</b>, x.subject, <span key="w" className="small">{x.when}{st === 'Live' ? ', live now' : ''}</span>,
-            sc !== undefined ? <span key="s" className="pill ok">{sc.score} / {sc.of}</span>
-              : st === 'Live' ? <button key="s" className="btn sm" onClick={() => setTaking(x)}>Start · {x.minutes} min</button>
-              : st === 'Scheduled' ? <span key="s" className="pill">Scheduled</span>
-              : <span key="s" className="pill">Closed</span>];
-        })} />
+        <Table head={['Test', 'Subject', 'Opens', '']} empty="No online tests for your class yet. When a teacher sets one, it appears here." rows={rows.map((x) => [
+          <b key="n">{x.name}</b>, x.subject, <span key="w" className="small">{opensLabel(x.opensAt)}{x.status === 'live' ? ', live now' : ''}</span>,
+          x.mine ? <button key="s" className="btn sm ghost" onClick={() => setTaking(x.id)}><span className="pill ok">{x.mine.score} / {x.mine.of}</span>Review</button>
+            : x.status === 'live' ? <button key="s" className="btn sm" onClick={() => setTaking(x.id)}>Start · {Math.max(1, Math.ceil((new Date(x.endsAt).getTime() - Date.now()) / 60000))} min left</button>
+            : x.status === 'closed' ? <button key="s" className="btn sm ghost" onClick={() => setTaking(x.id)}>Missed · see answers</button>
+            : <StatusPill key="s" status={x.status} />,
+        ])} />
       </div>
     </>
   );

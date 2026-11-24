@@ -44,6 +44,25 @@ describe('API', () => {
     await request(app).post('/api/rpc/restoreStudent').set('authorization', `Bearer ${advisor}`).send({ args: ['stu_cls_s1_10a_1'] }).expect(200);
     await login(app, '9840055555');
   });
+  it('serves a teacher’s online test to students of that class on their own sign-in', async () => {
+    const { app } = setup();
+    const teacher = await login(app, '9840022222');
+    const student = await login(app, '9840055555');
+    const principal = await login(app, '9840011111');
+    const d = new Date(); const p = (n: number) => String(n).padStart(2, '0');
+    const opensAt = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+    const rpc = (token: string, method: string, args: unknown[]) => request(app).post(`/api/rpc/${method}`).set('authorization', `Bearer ${token}`).send({ args });
+    const made = await rpc(teacher, 'createOnlineTest', [{ name: 'Trigonometry check', classIds: ['cls_s1_10a'], subject: 'Maths', minutes: 20, questions: 5, opensAt }]).expect(200);
+    const id = made.body.result.id;
+    const list = await rpc(student, 'listOnlineTests', []).expect(200);
+    expect(list.body.result.find((x: { id: string }) => x.id === id)?.status).toBe('live');
+    const paper = await rpc(student, 'onlinePaper', [id]).expect(200);
+    expect(paper.body.result.questions[0].answer).toBeUndefined();
+    const sub = await rpc(student, 'submitOnlineTest', [id, [1, 1, 1, 0, 1]]).expect(200);
+    expect(sub.body.result).toMatchObject({ score: 5, of: 5 });
+    const seen = await rpc(principal, 'listOnlineTests', []).expect(200);
+    expect(seen.body.result.find((x: { id: string }) => x.id === id)).toMatchObject({ submitted: 1, avg: 100 });
+  });
   it('enforces tenant isolation over HTTP', async () => {
     const { app } = setup();
     const token = await login(app, '9841011111');

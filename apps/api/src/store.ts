@@ -21,7 +21,7 @@ import { createSeed, SEED_VERSION, type Db } from '@enticra/core';
 
 export const COLLECTIONS = [
   'schools', 'users', 'classes', 'students', 'attendance', 'homework', 'submissions', 'formerStudents',
-  'reportArchive', 'halls', 'examPlans', 'timetableEdits', 'staffAttendance', 'staffLeave', 'exams',
+  'reportArchive', 'halls', 'examPlans', 'timetableEdits', 'staffAttendance', 'staffLeave', 'onlineTests', 'onlineAttempts', 'exams',
   'marks', 'scripts', 'messages', 'audit',
 ] as const satisfies readonly Exclude<keyof Db, 'meta'>[];
 type Collection = (typeof COLLECTIONS)[number];
